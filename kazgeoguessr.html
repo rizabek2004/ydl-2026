@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KazGuessr — GeoGuessr for Kazakhstan</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: system-ui, sans-serif; background: #0e1116; color: #e8e8e8; }
+  #app { height: 100%; position: relative; }
+
+  /* Screens */
+  .screen { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 24px; text-align: center; }
+  .hidden { display: none !important; }
+  h1 { font-size: 2.4rem; letter-spacing: 1px; }
+  h1 span { color: #2ec28b; }
+  p.sub { color: #9aa4b2; max-width: 520px; }
+  button { background: #2ec28b; color: #06231a; border: none; padding: 12px 26px;
+    font-size: 1rem; font-weight: 700; border-radius: 8px; cursor: pointer; }
+  button:hover { background: #38d89c; }
+  button.secondary { background: #2a3340; color: #e8e8e8; }
+  input { padding: 11px 14px; border-radius: 8px; border: 1px solid #2a3340;
+    background: #161c24; color: #e8e8e8; width: 360px; max-width: 90vw; font-size: .95rem; }
+  a { color: #2ec28b; }
+
+  /* Game layout */
+  #pano { position: absolute; inset: 0; }
+  #hud { position: absolute; top: 12px; left: 12px; right: 12px; display: flex;
+    justify-content: space-between; align-items: flex-start; pointer-events: none; z-index: 5; }
+  .badge { background: rgba(14,17,22,.82); padding: 8px 14px; border-radius: 8px;
+    font-weight: 700; pointer-events: auto; }
+  #timer.low { color: #ff5d5d; }
+
+  /* Guess map panel (bottom-right, expandable) */
+  #guessPanel { position: absolute; bottom: 16px; right: 16px; z-index: 6;
+    width: 320px; height: 220px; transition: width .2s, height .2s;
+    background: #0e1116; border: 2px solid #2a3340; border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column; }
+  #guessPanel:hover { width: 460px; height: 340px; }
+  #gmap { flex: 1; }
+  #guessBar { display: flex; gap: 8px; padding: 8px; }
+  #guessBar button { flex: 1; padding: 9px; font-size: .9rem; }
+
+  /* Round result overlay */
+  #result { position: absolute; inset: 0; z-index: 8; background: rgba(8,10,14,.92);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+  #resultMap { width: min(70vw, 720px); height: min(50vh, 420px); border-radius: 10px; }
+  .score-big { font-size: 2.6rem; font-weight: 800; color: #2ec28b; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- 1. API key / start screen -->
+  <div id="startScreen" class="screen">
+    <h1>Kaz<span>Guessr</span></h1>
+    <p class="sub">Guess where in Kazakhstan you are from the 360° view, then drop a pin on the map.
+      10 rounds, 60 seconds each. Closer = more points (max 5000/round).</p>
+    <p class="sub">This game needs a Google Maps JavaScript API key (with <b>Maps JavaScript API</b> enabled).
+      It is stored only in your browser.
+      <a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank">Get a key →</a></p>
+    <input id="apiKeyInput" placeholder="Paste your Google Maps API key" />
+    <div id="bestLine" class="sub"></div>
+    <button id="startBtn">Start game</button>
+  </div>
+
+  <!-- 2. Game screen -->
+  <div id="gameScreen" class="screen hidden" style="padding:0; display:block;">
+    <div id="pano"></div>
+    <div id="hud">
+      <div class="badge">Round <span id="roundNum">1</span>/10</div>
+      <div class="badge">⏱ <span id="timer">60</span>s</div>
+      <div class="badge">Score: <span id="totalScore">0</span></div>
+    </div>
+    <div id="guessPanel">
+      <div id="gmap"></div>
+      <div id="guessBar">
+        <button id="guessBtn" disabled>Place a pin</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Round result -->
+  <div id="result" class="screen hidden">
+    <div class="score-big"><span id="roundScore">0</span> pts</div>
+    <div class="sub"><span id="distanceText"></span></div>
+    <div id="resultMap"></div>
+    <button id="nextBtn">Next round →</button>
+  </div>
+
+  <!-- 4. Game over -->
+  <div id="overScreen" class="screen hidden">
+    <h1>Game <span>over</span></h1>
+    <div class="score-big"><span id="finalScore">0</span> / 50000</div>
+    <div class="sub" id="bestResult"></div>
+    <button id="playAgainBtn">Play again</button>
+    <button id="changeKeyBtn" class="secondary">Change API key</button>
+  </div>
+
+</div>
+
+<script>
+/* ---- Locations across Kazakhstan with Street View coverage ---- */
+const LOCATIONS = [
+  { lat: 43.2389, lng: 76.8897 }, // Almaty - Panfilov park
+  { lat: 43.2567, lng: 76.9286 }, // Almaty - Republic square
+  { lat: 51.1280, lng: 71.4304 }, // Astana - Bayterek
+  { lat: 51.0900, lng: 71.4180 }, // Astana - Nurzhol blvd
+  { lat: 42.3417, lng: 69.5901 }, // Shymkent center
+  { lat: 50.2839, lng: 57.1670 }, // Aktobe center
+  { lat: 47.0945, lng: 51.9238 }, // Atyrau center
+  { lat: 44.8488, lng: 65.4823 }, // Kyzylorda center
+  { lat: 49.8047, lng: 73.1094 }, // Karaganda center
+  { lat: 52.2873, lng: 76.9674 }, // Pavlodar center
+  { lat: 50.4111, lng: 80.2275 }, // Semey center
+  { lat: 54.8730, lng: 69.1620 }, // Petropavl center
+  { lat: 43.6500, lng: 51.1500 }, // Aktau center
+  { lat: 42.9000, lng: 71.3667 }, // Taraz center
+  { lat: 45.0156, lng: 78.3739 }, // Taldykorgan center
+  { lat: 50.4502, lng: 80.5800 }, // Semey area
+  { lat: 53.2840, lng: 69.4030 }, // Kokshetau center
+  { lat: 49.9483, lng: 82.6100 }, // Oskemen (Ust-Kamenogorsk)
+  { lat: 51.2280, lng: 51.3865 }, // Oral (Uralsk)
+  { lat: 43.3550, lng: 77.0000 }, // Almaty region
+];
+
+const ROUNDS = 10, ROUND_TIME = 60, MAX_SCORE = 5000;
+const KZ_CENTER = { lat: 48.0, lng: 67.0 };
+
+let map, pano, resultMap, svService, geocoder;
+let guessMarker = null, actualMarker = null, resultLine = null;
+let round = 0, totalScore = 0, timeLeft = ROUND_TIME, timerId = null;
+let currentTarget = null, locationOrder = [];
+
+const $ = id => document.getElementById(id);
+
+/* ---- Bootstrapping Google Maps with the user's key ---- */
+function loadGoogle(key) {
+  return new Promise((resolve, reject) => {
+    if (window.google && window.google.maps) return resolve();
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=geometry`;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load Google Maps. Check your API key.'));
+    document.head.appendChild(s);
+  });
+}
+
+function distanceKm(a, b) {
+  return google.maps.geometry.spherical.computeDistanceBetween(
+    new google.maps.LatLng(a.lat, a.lng), new google.maps.LatLng(b.lat, b.lng)
+  ) / 1000;
+}
+
+/* Score: 5000 at 0 km, decaying with distance (country scale). */
+function scoreFor(km) {
+  return Math.round(MAX_SCORE * Math.exp(-km / 400));
+}
+
+/* Find a panorama near a target (snaps to nearest Street View imagery). */
+function findPano(target) {
+  return new Promise((resolve) => {
+    svService.getPanorama({ location: target, radius: 8000,
+      preference: google.maps.StreetViewPreference.NEAREST,
+      source: google.maps.StreetViewSource.OUTDOOR }, (data, status) => {
+      if (status === 'OK') {
+        const loc = data.location.latLng;
+        resolve({ panoId: data.location.pano, lat: loc.lat(), lng: loc.lng() });
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+async function startGame() {
+  round = 0; totalScore = 0;
+  $('totalScore').textContent = '0';
+  locationOrder = shuffle(LOCATIONS);
+  show('gameScreen');
+  await nextRound();
+}
+
+function show(screen) {
+  ['startScreen', 'gameScreen', 'result', 'overScreen'].forEach(s =>
+    $(s).classList.toggle('hidden', s !== screen));
+}
+
+async function nextRound() {
+  if (round >= ROUNDS) return endGame();
+  round++;
+  $('roundNum').textContent = round;
+  $('guessBtn').disabled = true;
+  $('guessBtn').textContent = 'Place a pin';
+  if (guessMarker) { guessMarker.setMap(null); guessMarker = null; }
+
+  // Find a usable Street View near the (shuffled) target; fall back through the list.
+  let found = null, idx = (round - 1);
+  for (let tries = 0; tries < LOCATIONS.length && !found; tries++) {
+    const cand = locationOrder[(idx + tries) % locationOrder.length];
+    found = await findPano(cand);
+    if (found) currentTarget = { lat: found.lat, lng: found.lng };
+  }
+  if (!found) { alert('No Street View available right now. Try again later.'); return; }
+
+  pano.setPano(found.panoId);
+  pano.setPov({ heading: Math.random() * 360, pitch: 0 });
+  pano.setVisible(true);
+
+  // Reset guess map to a country-wide view.
+  map.setCenter(KZ_CENTER);
+  map.setZoom(4);
+
+  startTimer();
+}
+
+function startTimer() {
+  clearInterval(timerId);
+  timeLeft = ROUND_TIME;
+  updateTimer();
+  timerId = setInterval(() => {
+    timeLeft--;
+    updateTimer();
+    if (timeLeft <= 0) { clearInterval(timerId); submitGuess(true); }
+  }, 1000);
+}
+function updateTimer() {
+  $('timer').textContent = timeLeft;
+  $('timer').classList.toggle('low', timeLeft <= 10);
+}
+
+function onMapClick(e) {
+  const pos = e.latLng;
+  if (!guessMarker) {
+    guessMarker = new google.maps.Marker({ position: pos, map, draggable: true });
+  } else {
+    guessMarker.setPosition(pos);
+  }
+  $('guessBtn').disabled = false;
+  $('guessBtn').textContent = 'Guess!';
+}
+
+function submitGuess(timedOut) {
+  clearInterval(timerId);
+  let km, score;
+  if (!guessMarker) {
+    // No guess placed (timed out) -> 0 points, max distance shown.
+    km = null; score = 0;
+  } else {
+    const g = guessMarker.getPosition();
+    km = distanceKm({ lat: g.lat(), lng: g.lng() }, currentTarget);
+    score = scoreFor(km);
+  }
+  totalScore += score;
+  $('totalScore').textContent = totalScore;
+  showResult(km, score);
+}
+
+function showResult(km, score) {
+  $('roundScore').textContent = score;
+  $('distanceText').textContent = km === null
+    ? (round && timeLeft <= 0 ? 'Time up — no pin placed.' : 'No pin placed.')
+    : `You were ${km.toFixed(1)} km away.`;
+  show('result');
+
+  // Draw the truth + guess on the result map.
+  setTimeout(() => {
+    if (!resultMap) {
+      resultMap = new google.maps.Map($('resultMap'),
+        { center: currentTarget, zoom: 5, streetViewControl: false });
+    }
+    if (actualMarker) actualMarker.setMap(null);
+    if (resultLine) resultLine.setMap(null);
+    actualMarker = new google.maps.Marker({ position: currentTarget, map: resultMap,
+      label: 'A', title: 'Actual location' });
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(currentTarget);
+    if (guessMarker) {
+      const g = guessMarker.getPosition();
+      new google.maps.Marker({ position: g, map: resultMap, label: 'You' });
+      resultLine = new google.maps.Polyline({ path: [g, currentTarget], map: resultMap,
+        strokeColor: '#2ec28b', strokeWeight: 3 });
+      bounds.extend(g);
+      resultMap.fitBounds(bounds);
+    } else {
+      resultMap.setCenter(currentTarget); resultMap.setZoom(6);
+    }
+  }, 50);
+}
+
+function endGame() {
+  show('overScreen');
+  $('finalScore').textContent = totalScore;
+  const best = Number(localStorage.getItem('kazguessr_best') || 0);
+  if (totalScore > best) {
+    localStorage.setItem('kazguessr_best', totalScore);
+    $('bestResult').innerHTML = `🏆 New best score! Previous best: ${best}`;
+  } else {
+    $('bestResult').textContent = `Best score: ${best}`;
+  }
+}
+
+function refreshBestLine() {
+  const best = Number(localStorage.getItem('kazguessr_best') || 0);
+  $('bestLine').textContent = best ? `Best score so far: ${best}` : '';
+}
+
+/* ---- Wiring ---- */
+async function init(key) {
+  await loadGoogle(key);
+  svService = new google.maps.StreetViewService();
+  geocoder = new google.maps.Geocoder();
+  pano = new google.maps.StreetViewPanorama($('pano'), {
+    addressControl: false, showRoadLabels: false, linksControl: true,
+    panControl: true, enableCloseButton: false, fullscreenControl: false,
+  });
+  map = new google.maps.Map($('gmap'), {
+    center: KZ_CENTER, zoom: 4, disableDefaultUI: true, zoomControl: true,
+    clickableIcons: false, streetViewControl: false,
+  });
+  map.addListener('click', onMapClick);
+}
+
+$('startBtn').addEventListener('click', async () => {
+  const key = $('apiKeyInput').value.trim() || localStorage.getItem('kazguessr_key');
+  if (!key) { alert('Please paste a Google Maps API key.'); return; }
+  localStorage.setItem('kazguessr_key', key);
+  $('startBtn').textContent = 'Loading…'; $('startBtn').disabled = true;
+  try {
+    if (!window.google) await init(key);
+    await startGame();
+  } catch (e) {
+    alert(e.message || e);
+  } finally {
+    $('startBtn').textContent = 'Start game'; $('startBtn').disabled = false;
+  }
+});
+
+$('guessBtn').addEventListener('click', () => submitGuess(false));
+$('nextBtn').addEventListener('click', () => { show('gameScreen'); nextRound(); });
+$('playAgainBtn').addEventListener('click', () => startGame());
+$('changeKeyBtn').addEventListener('click', () => { show('startScreen'); refreshBestLine(); });
+
+// Prefill saved key & best score.
+(function () {
+  const savedKey = localStorage.getItem('kazguessr_key');
+  if (savedKey) $('apiKeyInput').value = savedKey;
+  refreshBestLine();
+})();
+</script>
+</body>
+</html>

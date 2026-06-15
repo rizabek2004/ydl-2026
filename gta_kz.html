@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Qala Auto — mini GTA (Kazakhstan)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #11151c; overflow: hidden;
+    font-family: system-ui, sans-serif; color: #fff; }
+  #game { display: block; }
+  #hud { position: fixed; top: 12px; left: 12px; font-weight: 700;
+    text-shadow: 0 1px 3px #000; line-height: 1.5; pointer-events: none; }
+  #hud .city { font-size: 1.4rem; color: #ffd24a; }
+  #stars { color: #ff5d5d; letter-spacing: 2px; }
+  #help { position: fixed; bottom: 12px; left: 12px; font-size: .8rem;
+    color: #9aa4b2; text-shadow: 0 1px 2px #000; }
+  #overlay { position: fixed; inset: 0; background: rgba(8,10,14,.85);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; text-align: center; }
+  #overlay h1 { font-size: 2.4rem; }
+  #overlay h1 span { color: #ffd24a; }
+  button { background: #ffd24a; color: #2a1d00; border: none; padding: 12px 28px;
+    font-size: 1rem; font-weight: 800; border-radius: 8px; cursor: pointer; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div class="city" id="cityName">—</div>
+  <div>💵 $<span id="money">0</span></div>
+  <div>❤ <span id="health">100</span></div>
+  <div id="stars"></div>
+</div>
+<div id="help">WASD / Arrows to drive · run over nothing required — collect cash · avoid the cops</div>
+
+<div id="overlay">
+  <h1>Qala <span>Auto</span></h1>
+  <div id="subtitle">Mini top-down GTA — somewhere in Kazakhstan</div>
+  <button id="startBtn">Drive</button>
+</div>
+
+<script>
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+const CITIES = ['Almaty','Astana','Shymkent','Karaganda','Aktobe','Taraz','Pavlodar',
+  'Oskemen','Semey','Atyrau','Kyzylorda','Kostanay','Petropavl','Aktau','Taldykorgan','Oral','Turkistan'];
+
+/* ---- World config ---- */
+const TILE = 220;        // block size
+const ROAD = 70;         // road width
+const GRID = 16;         // city is GRID x GRID blocks
+const WORLD = GRID * TILE;
+
+const keys = {};
+addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true;
+  if ([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(e.key.toLowerCase())) e.preventDefault(); });
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+let buildings = [], peds = [], pickups = [], cops = [], particles = [];
+let player, money, health, wanted, cityName, running = false, heat = 0;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/* roads run along the gaps between blocks; a point is on a road if it's near a grid line */
+function onRoad(x, y) {
+  const mx = ((x % TILE) + TILE) % TILE;
+  const my = ((y % TILE) + TILE) % TILE;
+  return mx < ROAD || my < ROAD;
+}
+
+function buildCity() {
+  buildings = []; pickups = []; peds = []; cops = []; particles = [];
+  const palette = ['#3a4250','#454d5c','#2f3744','#4a3f3f','#3f4a3f'];
+  for (let gx = 0; gx < GRID; gx++) {
+    for (let gy = 0; gy < GRID; gy++) {
+      const bx = gx * TILE + ROAD, by = gy * TILE + ROAD;
+      const bw = TILE - ROAD, bh = TILE - ROAD;
+      // split each block into 1-4 buildings with small yards
+      const cols = Math.random() < .5 ? 1 : 2, rows = Math.random() < .5 ? 1 : 2;
+      const cw = bw / cols, ch = bh / rows;
+      for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+        const pad = rand(6, 16);
+        buildings.push({ x: bx + i*cw + pad, y: by + j*ch + pad,
+          w: cw - pad*2, h: ch - pad*2, c: palette[(Math.random()*palette.length)|0] });
+      }
+    }
+  }
+  // cash pickups scattered on roads
+  for (let i = 0; i < 60; i++) {
+    let x, y;
+    do { x = rand(0, WORLD); y = rand(0, WORLD); } while (!onRoad(x, y));
+    pickups.push({ x, y, r: 11 });
+  }
+  // pedestrians on sidewalks/roads
+  for (let i = 0; i < 40; i++) {
+    let x, y;
+    do { x = rand(0, WORLD); y = rand(0, WORLD); } while (!onRoad(x, y));
+    peds.push({ x, y, dir: rand(0, Math.PI*2), spd: rand(18, 34), c: `hsl(${rand(0,360)|0} 50% 60%)`, alive: true });
+  }
+}
+
+function spawnCop() {
+  // spawn off-screen relative to player, on a road
+  let x, y, tries = 0;
+  do {
+    const ang = rand(0, Math.PI*2), dist = rand(700, 1100);
+    x = clamp(player.x + Math.cos(ang)*dist, 0, WORLD);
+    y = clamp(player.y + Math.sin(ang)*dist, 0, WORLD);
+    tries++;
+  } while (!onRoad(x, y) && tries < 30);
+  cops.push({ x, y, vx: 0, vy: 0, spd: 230 });
+}
+
+function startGame() {
+  cityName = CITIES[(Math.random()*CITIES.length)|0];
+  document.getElementById('cityName').textContent = cityName;
+  buildCity();
+  // place player on a road near the center
+  let px = WORLD/2, py = WORLD/2;
+  while (!onRoad(px, py)) px += 10;
+  player = { x: px, y: py, angle: -Math.PI/2, speed: 0 };
+  money = 0; health = 100; wanted = 0; heat = 0; running = true;
+  document.getElementById('overlay').classList.add('hidden');
+  updateHUD();
+}
+
+function gameOver() {
+  running = false;
+  const ov = document.getElementById('overlay');
+  ov.classList.remove('hidden');
+  ov.querySelector('h1').innerHTML = `Busted in <span>${cityName}</span>`;
+  document.getElementById('subtitle').textContent = `You collected $${money}. Wanted level reached ${wanted}★.`;
+  document.getElementById('startBtn').textContent = 'Drive again';
+}
+
+function updateHUD() {
+  document.getElementById('money').textContent = money;
+  document.getElementById('health').textContent = Math.max(0, Math.round(health));
+  document.getElementById('stars').textContent = '★'.repeat(wanted) + '☆'.repeat(Math.max(0,5-wanted));
+}
+
+function rectHit(px, py, b, pad = 0) {
+  return px > b.x - pad && px < b.x + b.w + pad && py > b.y - pad && py < b.y + b.h + pad;
+}
+
+let last = 0;
+function loop(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
+  if (running) { update(dt); render(); }
+  requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  // ---- car physics ----
+  const accel = 620, maxF = 430, maxR = -180, friction = 0.92;
+  const up = keys['w'] || keys['arrowup'], down = keys['s'] || keys['arrowdown'];
+  const left = keys['a'] || keys['arrowleft'], right = keys['d'] || keys['arrowright'];
+
+  if (up) player.speed += accel * dt;
+  else if (down) player.speed -= accel * dt;
+  else player.speed *= friction;
+  player.speed = clamp(player.speed, maxR, maxF);
+
+  // turning scales with speed and direction
+  const turn = 2.6 * dt * (player.speed / maxF);
+  if (left) player.angle -= turn;
+  if (right) player.angle += turn;
+
+  const nx = player.x + Math.cos(player.angle) * player.speed * dt;
+  const ny = player.y + Math.sin(player.angle) * player.speed * dt;
+
+  // collision with buildings -> bounce & damage
+  let hit = false;
+  for (const b of buildings) {
+    if (rectHit(nx, ny, b, 6)) { hit = true; break; }
+  }
+  if (hit) {
+    if (Math.abs(player.speed) > 250) health -= Math.abs(player.speed) * dt * 0.06;
+    player.speed *= -0.25;
+  } else {
+    player.x = clamp(nx, 8, WORLD-8);
+    player.y = clamp(ny, 8, WORLD-8);
+  }
+
+  // ---- pickups ----
+  for (const p of pickups) {
+    if (p.taken) continue;
+    if (Math.hypot(p.x - player.x, p.y - player.y) < 22) {
+      p.taken = true; money += 50; updateHUD();
+    }
+  }
+
+  // ---- pedestrians ----
+  for (const ped of peds) {
+    if (!ped.alive) continue;
+    ped.x += Math.cos(ped.dir) * ped.spd * dt;
+    ped.y += Math.sin(ped.dir) * ped.spd * dt;
+    if (!onRoad(ped.x, ped.y) || Math.random() < 0.01) ped.dir = rand(0, Math.PI*2);
+    ped.x = clamp(ped.x, 0, WORLD); ped.y = clamp(ped.y, 0, WORLD);
+    if (Math.hypot(ped.x - player.x, ped.y - player.y) < 16 && Math.abs(player.speed) > 120) {
+      ped.alive = false;
+      wanted = clamp(wanted + 1, 0, 5);
+      for (let i = 0; i < 8; i++) particles.push({ x: ped.x, y: ped.y,
+        vx: rand(-80,80), vy: rand(-80,80), life: 0.6, c: '#c0392b' });
+      updateHUD();
+    }
+  }
+
+  // ---- wanted / cops ----
+  if (wanted > 0) {
+    heat += dt;
+    if (cops.length < wanted && heat > 1.2) { spawnCop(); heat = 0; }
+  }
+  for (const c of cops) {
+    const dx = player.x - c.x, dy = player.y - c.y, d = Math.hypot(dx, dy) || 1;
+    c.x += (dx/d) * c.spd * dt;
+    c.y += (dy/d) * c.spd * dt;
+    if (d < 26) { health -= 24 * dt; }      // cop ramming
+  }
+
+  // particles
+  for (const p of particles) { p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; }
+  particles = particles.filter(p => p.life > 0);
+
+  if (health <= 0) gameOver();
+}
+
+function render() {
+  // camera centered on player
+  const camX = clamp(player.x - W/2, 0, WORLD - W);
+  const camY = clamp(player.y - H/2, 0, WORLD - H);
+  ctx.setTransform(1,0,0,1,0,0);
+
+  // asphalt background
+  ctx.fillStyle = '#23272e'; ctx.fillRect(0, 0, W, H);
+  ctx.translate(-camX, -camY);
+
+  // road grid (lighter strips along grid lines)
+  ctx.fillStyle = '#2b3038';
+  for (let gx = 0; gx <= GRID; gx++) ctx.fillRect(gx*TILE - 0, 0, ROAD, WORLD);
+  for (let gy = 0; gy <= GRID; gy++) ctx.fillRect(0, gy*TILE - 0, WORLD, ROAD);
+  // lane dashes
+  ctx.strokeStyle = '#666'; ctx.setLineDash([14, 18]); ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let gx = 0; gx <= GRID; gx++) { ctx.moveTo(gx*TILE + ROAD/2, 0); ctx.lineTo(gx*TILE + ROAD/2, WORLD); }
+  for (let gy = 0; gy <= GRID; gy++) { ctx.moveTo(0, gy*TILE + ROAD/2); ctx.lineTo(WORLD, gy*TILE + ROAD/2); }
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // buildings (cull to viewport)
+  for (const b of buildings) {
+    if (b.x+b.w < camX || b.x > camX+W || b.y+b.h < camY || b.y > camY+H) continue;
+    ctx.fillStyle = b.c; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(b.x, b.y, b.w, 6);
+  }
+
+  // pickups
+  for (const p of pickups) {
+    if (p.taken) continue;
+    ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0a3'; ctx.font = '12px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('$', p.x, p.y+4);
+  }
+
+  // pedestrians
+  for (const ped of peds) { if (!ped.alive) continue;
+    ctx.fillStyle = ped.c; ctx.beginPath(); ctx.arc(ped.x, ped.y, 6, 0, 7); ctx.fill(); }
+
+  // particles
+  for (const p of particles) { ctx.fillStyle = p.c; ctx.fillRect(p.x-2, p.y-2, 4, 4); }
+
+  // cops
+  for (const c of cops) drawCar(c.x, c.y, Math.atan2(player.y-c.y, player.x-c.x), '#2b6cff', true);
+
+  // player car
+  drawCar(player.x, player.y, player.angle, '#e74c3c', false);
+}
+
+function drawCar(x, y, angle, color, isCop) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(angle);
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(-16, -9, 34, 18);
+  ctx.fillStyle = color; ctx.fillRect(-18, -11, 34, 22);
+  ctx.fillStyle = '#cfe3ff'; ctx.fillRect(2, -8, 8, 16);   // windshield
+  if (isCop) { ctx.fillStyle = '#ff3b3b'; ctx.fillRect(-6,-11,6,4);
+    ctx.fillStyle = '#3b6bff'; ctx.fillRect(0,-11,6,4); }
+  ctx.restore();
+}
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

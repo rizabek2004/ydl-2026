@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Angry Qus — slingshot physics game</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; font-family: system-ui, sans-serif; color: #fff; }
+  #wrap { position: relative; height: 100%; background: #87b8e0; }
+  canvas { display: block; position: absolute; inset: 0; }
+
+  .screen { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 20px; padding: 24px; text-align: center; }
+  .hidden { display: none !important; }
+  h1 { font-size: 3rem; text-shadow: 0 3px 0 #00000060, 0 0 18px #0008; }
+  h1 span { color: #ffcf33; }
+  h2 { font-size: 1.3rem; text-shadow: 0 2px 6px #000a; }
+
+  .themes { display: grid; grid-template-columns: repeat(2, 210px); gap: 18px; }
+  .theme-card { padding: 24px 18px; border-radius: 14px; cursor: pointer; font-size: 1.3rem;
+    font-weight: 800; border: 3px solid #ffffff55; transition: transform .1s; color:#1b2a36;
+    box-shadow: 0 8px 24px #0006; }
+  .theme-card small { display:block; font-weight:600; font-size:.8rem; opacity:.8; margin-top:6px; }
+  .theme-card:hover { transform: translateY(-4px); }
+
+  .levels { display: grid; grid-template-columns: repeat(10, 56px); gap: 10px; }
+  .lvl { width: 56px; height: 56px; border-radius: 11px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; font-weight: 800; cursor: pointer;
+    background: #ffffff22; border: 2px solid #ffffff45; backdrop-filter: blur(2px); }
+  .lvl:hover { background:#ffffff35; }
+  .lvl .stars { font-size: .62rem; color: #ffcf33; }
+
+  button { background: #ffcf33; color: #3a2a00; border: none; padding: 11px 24px;
+    font-size: 1rem; font-weight: 800; border-radius: 9px; cursor: pointer; }
+  button.ghost { background: #ffffff22; color: #fff; }
+  .row { display: flex; gap: 12px; align-items:center; }
+
+  #hud { position: absolute; top: 10px; left: 12px; right: 12px; display: flex;
+    justify-content: space-between; pointer-events: none; font-weight: 800; text-shadow: 0 2px 2px #0008; }
+  #hud .pill { background: #00000045; padding: 6px 12px; border-radius: 8px; pointer-events: auto; }
+  #soundBtn, #menuSound { cursor:pointer; }
+
+  #endCard { position: absolute; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; background: #0009; }
+  #endCard.show { display: flex; }
+  #endCard h2 { font-size: 2.1rem; }
+  #endCard .score { font-size: 1.4rem; color:#ffcf33; }
+  .hint { font-size: .82rem; opacity: .85; max-width: 470px; text-shadow:0 1px 3px #000; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+
+  <div id="hud" class="hidden">
+    <div class="pill" id="hudInfo">—</div>
+    <div class="pill" id="hudScore">Score: 0</div>
+    <div class="row">
+      <div class="pill" id="soundBtn">🔊</div>
+      <button id="backBtn" class="ghost" style="padding:6px 12px;pointer-events:auto;">Menu</button>
+    </div>
+  </div>
+  <div id="endCard"></div>
+
+  <!-- Main menu -->
+  <div id="menu" class="screen">
+    <h1>Angry <span>Qus</span></h1>
+    <h2>Choose a theme</h2>
+    <div class="themes" id="themeList"></div>
+    <div class="hint">Drag the bird in the slingshot &amp; release. Realistic gravity, mass &amp; materials —
+      glass shatters, rock barely cracks. Click / Space in flight = special power. Pop every pig to win.</div>
+    <div class="pill" id="menuSound" style="background:#00000045;padding:6px 12px;border-radius:8px;cursor:pointer;">🔊 Sound: on</div>
+  </div>
+
+  <!-- Level select -->
+  <div id="levelSelect" class="screen hidden">
+    <h1 id="themeTitle">Theme</h1>
+    <h2>All 20 levels unlocked — pick any</h2>
+    <div class="levels" id="levelGrid"></div>
+    <button class="ghost" id="toMenuBtn">← Back to themes</button>
+  </div>
+</div>
+
+<script>
+/* ============================ Setup ============================ */
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let W, H, GROUND;
+function resize(){ W=cv.width=innerWidth; H=cv.height=innerHeight; GROUND=H-80; }
+addEventListener('resize', resize); resize();
+
+const $ = s => document.querySelector(s);
+const rand = (r) => () => (r=(r*1103515245+12345)&0x7fffffff)/0x7fffffff;
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const now = ()=>performance.now()/1000;
+
+/* ============================ Sound engine (procedural, WebAudio) ============================ */
+const SOUND_KEY='angryqus_sound';
+const Snd = {
+  ctx:null, master:null, musicGain:null, ambGain:null,
+  enabled:(localStorage.getItem(SOUND_KEY)!=='off'),
+  schedHandle:null, chirpHandle:null, melodyIdx:0, nextNote:0, currentMusic:null, ambNodes:[],
+  ambGen:0, musicGen:0,   /* tokens: bump on every start/stop so stale loops self-terminate (theme isolation) */
+  init(){ if(this.ctx)return;
+    const AC=window.AudioContext||window.webkitAudioContext; this.ctx=new AC();
+    this.master=this.ctx.createGain(); this.master.gain.value=this.enabled?0.9:0; this.master.connect(this.ctx.destination);
+    this.musicGain=this.ctx.createGain(); this.musicGain.gain.value=0.18; this.musicGain.connect(this.master);
+    this.ambGain=this.ctx.createGain(); this.ambGain.gain.value=0; this.ambGain.connect(this.master); },
+  resume(){ if(this.ctx&&this.ctx.state==='suspended') this.ctx.resume(); },
+  setEnabled(on){ this.enabled=on; localStorage.setItem(SOUND_KEY,on?'on':'off');
+    if(this.master) this.master.gain.value=on?0.9:0; },
+  noiseBuffer(){ if(this._nb)return this._nb;
+    const len=this.ctx.sampleRate*2, buf=this.ctx.createBuffer(1,len,this.ctx.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1; return this._nb=buf; },
+  tone(f,t,dur,type='sine',gain=0.3,dest){ const o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type=type; o.frequency.setValueAtTime(f,t); g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(gain,t+0.01); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    o.connect(g); g.connect(dest||this.master); o.start(t); o.stop(t+dur+0.02); },
+  noiseBurst(t,dur,freq,q,gain=0.4){ const s=this.ctx.createBufferSource(); s.buffer=this.noiseBuffer();
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=freq; bp.Q.value=q||1;
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(gain,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    s.connect(bp); bp.connect(g); g.connect(this.master); s.start(t); s.stop(t+dur); },
+  sweep(f0,f1,dur,gain,type='sine',dest){ const t=this.ctx.currentTime, o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type=type; o.frequency.setValueAtTime(f0,t); o.frequency.exponentialRampToValueAtTime(f1,t+dur);
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    o.connect(g); g.connect(dest||this.master); o.start(t); o.stop(t+dur+0.02); },
+  launch(){ if(!this.ready())return; const t=this.ctx.currentTime; const o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type='sawtooth'; o.frequency.setValueAtTime(620,t); o.frequency.exponentialRampToValueAtTime(120,t+0.25);
+    g.gain.setValueAtTime(0.22,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.28);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t+0.3); this.noiseBurst(t,0.16,800,0.7,0.16); },
+  thud(s){ if(!this.ready())return; const t=this.ctx.currentTime; this.tone(110,t,0.12,'square',clamp(s,0.05,0.35)); this.noiseBurst(t,0.09,280,0.8,0.18); },
+  /* material-specific break sounds */
+  breakSound(mat){ if(!this.ready())return; const t=this.ctx.currentTime;
+    if(mat==='glass'){ this.noiseBurst(t,0.22,2600,2,0.34); this.tone(2400,t,0.1,'triangle',0.12); }
+    else if(mat==='wood'){ this.noiseBurst(t,0.14,700,1,0.3); this.tone(180,t,0.08,'square',0.15); }
+    else if(mat==='brick'){ this.noiseBurst(t,0.16,500,0.8,0.3); this.tone(140,t,0.1,'square',0.18); }
+    else { this.noiseBurst(t,0.2,300,0.5,0.34); this.tone(90,t,0.14,'square',0.2); } },
+  pop(){ if(!this.ready())return; const t=this.ctx.currentTime; this.tone(880,t,0.08,'square',0.28); this.tone(1320,t+0.03,0.1,'sine',0.22); },
+  boom(){ if(!this.ready())return; const t=this.ctx.currentTime; const o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type='sine'; o.frequency.setValueAtTime(180,t); o.frequency.exponentialRampToValueAtTime(40,t+0.5);
+    g.gain.setValueAtTime(0.45,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.5);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t+0.5); this.noiseBurst(t,0.4,500,0.5,0.36); },
+  win(){ if(!this.ready())return; const t=this.ctx.currentTime; [523,659,784,1047].forEach((f,i)=>this.tone(f,t+i*0.13,0.3,'triangle',0.3)); },
+  lose(){ if(!this.ready())return; const t=this.ctx.currentTime; [392,330,262,196].forEach((f,i)=>this.tone(f,t+i*0.16,0.35,'sawtooth',0.24)); },
+  ready(){ return this.ctx && this.enabled; },
+
+  /* soft in-game music per theme */
+  MELODIES:{
+    Atyrau:[[392,.45],[440,.45],[523,.45],[440,.45],[349,.55],[392,.55],[0,.4]],
+    Almaty:[[523,.4],[587,.4],[523,.4],[440,.5],[392,.5],[440,.65],[0,.4]],
+    Aktau:[[587,.34],[698,.34],[784,.34],[698,.34],[659,.5],[523,.6],[0,.4]],
+    Kostanai:[[659,.34],[784,.34],[988,.34],[880,.34],[784,.5],[659,.5],[0,.4]],
+  },
+  startMusic(name){ this.init(); if(!this.enabled)return; this.resume(); const gen=++this.musicGen;
+    this.currentMusic=name; this.melodyIdx=0; this.nextNote=this.ctx.currentTime+0.1;
+    if(this.schedHandle)clearInterval(this.schedHandle);
+    this.schedHandle=setInterval(()=>this._sched(gen),70); },
+  _sched(gen){ if(!this.ctx||!this.enabled||gen!==this.musicGen)return; const mel=this.MELODIES[this.currentMusic]; if(!mel)return;
+    while(this.nextNote<this.ctx.currentTime+0.35){ const [f,d]=mel[this.melodyIdx];
+      if(f>0){ this.tone(f,this.nextNote,d*0.9,'square',0.13,this.musicGain); this.tone(f/2,this.nextNote,d*0.9,'triangle',0.09,this.musicGain); }
+      this.nextNote+=d; this.melodyIdx=(this.melodyIdx+1)%mel.length; } },
+  stopMusic(){ this.musicGen++; if(this.schedHandle){clearInterval(this.schedHandle);this.schedHandle=null;} },
+
+  /* Per-theme natural soundscapes. Each has its OWN base bed (wind/waves/rustle) + its own
+     "critter" voice. base raised so it is clearly audible; swell LFO gives life. */
+  AMB:{
+    // Atyrau desert: dry low wind + sparse distant insect/bird warble
+    Atyrau:{ filter:'bandpass', freq:300, q:0.4, base:0.14, swell:0.07, rate:2.8,
+      critter(S){ const t=S.ctx.currentTime, f=520+Math.random()*260; S.tone(f,t,0.22,'triangle',0.05); S.tone(f*0.75,t+0.18,0.18,'triangle',0.04); } },
+    // Almaty mountains: cool breeze + clear songbirds
+    Almaty:{ filter:'bandpass', freq:560, q:0.6, base:0.12, swell:0.12, rate:1.3,
+      critter(S){ const t=S.ctx.currentTime, f=1700+Math.random()*900; S.tone(f,t,0.12,'sine',0.06); S.tone(f*1.25,t+0.09,0.1,'sine',0.05); } },
+    // Aktau coast: lowpassed ocean wash (strong slow swell) + gull cries
+    Aktau:{ filter:'lowpass', freq:430, q:0.4, base:0.16, swell:0.25, rate:3.0,
+      critter(S){ const f=1500+Math.random()*300; S.sweep(f,f*0.62,0.4,0.06,'sine'); S.sweep(f*0.95,f*0.6,0.35,0.045,'sine'); } },
+    // Kostanai taiga: soft forest wind + frequent birdsong
+    Kostanai:{ filter:'bandpass', freq:620, q:0.55, base:0.12, swell:0.1, rate:0.85,
+      critter(S){ const t=S.ctx.currentTime, f=1600+Math.random()*1000; S.tone(f,t,0.12,'sine',0.06); S.tone(f*1.3,t+0.08,0.1,'sine',0.05); } },
+  },
+  startAmbient(theme){ this.init(); if(!this.enabled)return; this.resume(); this.stopAmbient();
+    const gen=++this.ambGen;                       // token captured by the critter loop below
+    const cfg=this.AMB[theme]; if(!cfg)return;
+    // base bed: looping noise -> theme filter -> ambGain
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuffer(); src.loop=true;
+    const filt=this.ctx.createBiquadFilter(); filt.type=cfg.filter; filt.frequency.value=cfg.freq; filt.Q.value=cfg.q;
+    src.connect(filt); filt.connect(this.ambGain); src.start();
+    // slow swell so the bed breathes (waves/gusts)
+    const lfo=this.ctx.createOscillator(), lfoG=this.ctx.createGain();
+    lfo.frequency.value=cfg.swell; lfoG.gain.value=cfg.base*0.6; lfo.connect(lfoG); lfoG.connect(this.ambGain.gain); lfo.start();
+    this.ambGain.gain.value=cfg.base; this.ambNodes=[src,filt,lfo,lfoG];
+    // theme critter loop — bails (without rescheduling) the instant its generation is superseded
+    const critter=()=>{ if(gen!==this.ambGen||!this.enabled)return; cfg.critter(this);
+      this.chirpHandle=setTimeout(critter,(cfg.rate+Math.random()*cfg.rate)*1000); };
+    this.chirpHandle=setTimeout(critter,1200); },
+  stopAmbient(){ this.ambGen++;                    // invalidate any in-flight critter loop (theme isolation)
+    this.ambNodes.forEach(n=>{ try{n.stop&&n.stop()}catch(e){} try{n.disconnect&&n.disconnect()}catch(e){} }); this.ambNodes=[];
+    if(this.chirpHandle){clearTimeout(this.chirpHandle);this.chirpHandle=null;} if(this.ambGain)this.ambGain.gain.value=0; },
+};
+
+/* ============================ Themes ============================ */
+/* Four Kazakhstan cities, each with its own biome scene, palette, soundscape and build style */
+const THEMES = {
+  Atyrau:  { label:'Atyrau',   tag:'desert oilfields',   biome:'desert',   sky:['#f6d79b','#e3a85c'], ground:'#cda062', pig:'#8fbf4f' },
+  Almaty:  { label:'Almaty',   tag:'mountains & city',   biome:'mountain', sky:['#bfe2f6','#7fb2da'], ground:'#7e8a64', pig:'#7ec850' },
+  Aktau:   { label:'Aktau',    tag:'sea & white cliffs', biome:'coast',    sky:['#cfeefb','#80c4e8'], ground:'#e8e1cd', pig:'#7ec850' },
+  Kostanai:{ label:'Kostanai', tag:'deep taiga forest',  biome:'forest',   sky:['#a7c4ad','#6c986f'], ground:'#3c3220', pig:'#6fbf3f' },
+};
+const THEME_NAMES = Object.keys(THEMES);
+
+/* ============================ Materials ============================ */
+/* hp = durability, mass affects collisions, thr = impact speed below which no damage,
+   k = damage multiplier, value = score for destroying */
+/* thresholds retuned for the slower bird speeds below so breaking stays responsive */
+const MAT = {
+  glass:{ hp:16,  mass:0.6, thr:22,  k:0.13, value:100, color:'#bfe6ff', alpha:0.55, shards:14 },
+  wood: { hp:52,  mass:1.0, thr:65,  k:0.08, value:150, color:'#b07a3c', alpha:1,    shards:7  },
+  brick:{ hp:80,  mass:1.5, thr:105, k:0.06, value:250, color:'#bd5b43', alpha:1,    shards:6  },
+  rock: { hp:130, mass:2.4, thr:150, k:0.045,value:400, color:'#8d8d8d', alpha:1,    shards:5  },
+};
+
+/* ============================ Birds ============================ */
+const BIRDS = {
+  red:    { name:'Qyzyl', color:'#d33024', belly:'#f0b8a0', r:17, special:'none' },
+  blue:   { name:'Kok',   color:'#2f93d8', belly:'#bfe6ff', r:13, special:'split' },
+  yellow: { name:'Sary',  color:'#f4c41c', belly:'#ffe9a0', r:16, special:'dash' },
+  black:  { name:'Qara',  color:'#2c2c2c', belly:'#7a1f1f', r:19, special:'bomb' },
+};
+
+/* ============================ Pigs ============================ */
+const PIGS = {
+  small:    { r:11, hp:30,  score:500,  helmet:false, crown:false, rank:false, label:'small' },
+  regular:  { r:15, hp:55,  score:700,  helmet:false, crown:false, rank:false, label:'regular' },
+  corporal: { r:17, hp:110, score:1200, helmet:true,  crown:false, rank:true,  label:'corporal' },
+  king:     { r:27, hp:240, score:5000, helmet:false, crown:true,  rank:false, label:'king' },
+};
+
+/* ============================ Progress (stars only; all levels open) ============================ */
+const PKEY='angryqus_progress';
+function loadProgress(){ try{return JSON.parse(localStorage.getItem(PKEY))||{};}catch{return{};} }
+function saveStars(theme,level,stars){ const p=loadProgress(); p[theme]=p[theme]||{};
+  p[theme][level]=Math.max(p[theme][level]||0,stars); localStorage.setItem(PKEY,JSON.stringify(p)); }
+
+/* ============================ Level generation (diverse layouts) ============================ */
+/* Issue 1 fix: a large library of structurally distinct templates instead of 5 cycled ones.
+   Each has its own height/width/support pattern, stability and a strategic weakness.
+   `min` gates a template behind a difficulty (level index) so progression stays fair. */
+const ROWH=34;
+const TEMPLATES=[
+  // --- early / simple ---
+  { name:'scatter', min:0, build(C){           // loose ground pigs under flimsy glass shelters (easy)
+    const n=2+Math.floor(C.diff*2);
+    for(let i=0;i<n;i++){ const x=C.baseX+i*(C.span/Math.max(1,n-1));
+      if(C.rng()<0.6){ C.box(x-4,GROUND-30,16,28,'glass'); C.box(x+16,GROUND-30,16,28,'glass'); }
+      C.pig(x+8, GROUND-16, C.reg()); } } },
+  { name:'tower', min:0, build(C){              // tall narrow stacks — top-heavy, easy to topple
+    const n=2+Math.floor(C.rng()*2);
+    for(let c=0;c<n;c++){ const x=C.baseX+c*(C.span/Math.max(1,n)); const h=3+Math.floor(C.diff*4+C.rng()*3);
+      for(let l=0;l<h;l++) C.box(x,GROUND-(l+1)*ROWH,34,32);
+      C.pig(x+17, GROUND-h*ROWH-14, C.boss());
+      if(C.rng()<0.5) C.pig(x+17, GROUND-Math.floor(h/2)*ROWH-14, C.reg()); } } },
+  { name:'wideWall', min:0, build(C){           // long low wall, pigs perched on top + tucked behind
+    const h=2+Math.floor(C.diff*2);
+    for(let x=C.baseX;x<=C.baseX+C.span;x+=34) for(let l=0;l<h;l++) C.box(x,GROUND-(l+1)*ROWH,34,32, l===h-1?'wood':C.pickMat());
+    const np=2+Math.floor(C.diff*2);
+    for(let i=0;i<np;i++) C.pig(C.baseX+30+i*((C.span-40)/Math.max(1,np-1)), GROUND-h*ROWH-14, C.reg());
+    C.pig(C.baseX+C.span+30, GROUND-16, C.boss()); } },
+  { name:'pyramid', min:0, build(C){            // stable triangle — hard to knock over; hit the apex
+    const base=3+Math.floor(C.diff*3);
+    for(let row=0;row<base;row++){ const count=base-row, y=GROUND-(row+1)*ROWH;
+      for(let c=0;c<count;c++) C.box(C.baseX+c*36+row*18,y,34,32); }
+    C.pig(C.baseX+base*18, GROUND-base*ROWH-14, C.boss());
+    C.pig(C.baseX+10, GROUND-16, C.reg()); C.pig(C.baseX+(base-1)*36, GROUND-16, C.reg()); } },
+  // --- mid ---
+  { name:'staircase', min:1, build(C){          // ascending steps, a pig on each — precision
+    const steps=3+Math.floor(C.diff*3);
+    for(let s=0;s<steps;s++){ const x=C.baseX+s*60, h=s+1;
+      for(let l=0;l<h;l++) C.box(x,GROUND-(l+1)*ROWH,34,32,C.pickMat());
+      C.pig(x+17, GROUND-h*ROWH-14, s===steps-1?C.boss():C.reg()); } } },
+  { name:'bridge', min:2, build(C){             // piers + beams; knock a pier and the span falls
+    const piers=2+Math.floor(C.diff*2), segW=C.span/piers;
+    for(let p=0;p<=piers;p++){ const x=C.baseX+p*segW; for(let l=0;l<2+(p%2);l++) C.box(x,GROUND-(l+1)*ROWH,28,32,'brick'); }
+    for(let p=0;p<piers;p++){ const x=C.baseX+p*segW; C.box(x+14,GROUND-3*ROWH,segW-2,16,'wood');
+      C.pig(x+segW/2, GROUND-3*ROWH-14, p===piers-1?C.boss():C.reg()); } } },
+  { name:'twinTowers', min:3, build(C){         // two towers + a gap — needs spread / multiple hits
+    const h=4+Math.floor(C.diff*3), gap=72, xL=C.baseX, xR=C.baseX+gap+34;
+    for(let l=0;l<h;l++){ C.box(xL,GROUND-(l+1)*ROWH,34,32,l<2?'rock':C.pickMat()); C.box(xR,GROUND-(l+1)*ROWH,34,32,l<2?'rock':C.pickMat()); }
+    C.box(xL,GROUND-(h+1)*ROWH,xR-xL+34,16,'wood');
+    C.pig(xL+17,GROUND-h*ROWH-14,C.boss()); C.pig(xR+17,GROUND-h*ROWH-14,C.reg());
+    C.pig((xL+xR)/2+17, GROUND-16, C.reg()); } },
+  { name:'fortress', min:3, build(C){           // rock walls + wood roof, pigs inside; weakness = roof
+    const h=3+Math.floor(C.diff*3);
+    for(let l=0;l<h;l++){ C.box(C.baseX,GROUND-(l+1)*ROWH,30,32,'rock'); C.box(C.baseX+C.span,GROUND-(l+1)*ROWH,30,32,'rock'); }
+    for(let x=C.baseX;x<=C.baseX+C.span;x+=40) C.box(x,GROUND-(h+1)*ROWH,40,16,'wood');
+    const inside=2+Math.floor(C.diff*2);
+    for(let i=0;i<inside;i++) C.pig(C.baseX+50+i*((C.span-80)/Math.max(1,inside-1)), GROUND-16, i===0?C.boss():C.reg()); } },
+  // --- harder ---
+  { name:'tunnel', min:4, build(C){             // heavy rock roof on two GLASS pillars — shatter a pillar!
+    const w=C.span*0.7, pillH=3;
+    for(let l=0;l<pillH;l++){ C.box(C.baseX,GROUND-(l+1)*ROWH,28,32,'glass'); C.box(C.baseX+w,GROUND-(l+1)*ROWH,28,32,'glass'); }
+    for(let x=C.baseX;x<=C.baseX+w;x+=44) C.box(x,GROUND-(pillH+1)*ROWH,44,22,'rock');
+    C.pig(C.baseX+w/2+14, GROUND-16, C.boss());
+    C.pig(C.baseX+w/2+14, GROUND-(pillH+1)*ROWH-16, C.reg()); } },
+  { name:'cantilever', min:5, build(C){         // pig on an overhang balanced by a counterweight — unstable
+    const ph=3+Math.floor(C.diff*2);
+    for(let l=0;l<ph;l++) C.box(C.baseX,GROUND-(l+1)*ROWH,34,32,'rock');
+    C.box(C.baseX-92,GROUND-ph*ROWH,132,16,'wood');
+    C.box(C.baseX+34,GROUND-ph*ROWH,92,16,'wood');
+    C.box(C.baseX+92,GROUND-(ph+1)*ROWH,34,32,'brick');
+    C.pig(C.baseX-50,GROUND-ph*ROWH-14,C.boss());
+    C.pig(C.baseX+17, GROUND-16, C.reg()); } },
+  { name:'bunker', min:5, build(C){             // tall front wall, pigs low behind — arc over / dash through
+    const h=4+Math.floor(C.diff*3);
+    for(let l=0;l<h;l++) C.box(C.baseX,GROUND-(l+1)*ROWH,34,32, l<h-1?'rock':'wood');
+    const np=2+Math.floor(C.diff*2);
+    for(let i=0;i<np;i++) C.pig(C.baseX+70+i*48, GROUND-16, i===0?C.boss():C.reg());
+    for(let l=0;l<2;l++) C.box(C.baseX+70+np*48, GROUND-(l+1)*ROWH,30,32,'brick'); } },
+  { name:'zigzag', min:6, build(C){             // alternating offset stacks that lean and chain-topple
+    const n=3+Math.floor(C.diff*3);
+    for(let i=0;i<n;i++){ const x=C.baseX+i*46+(i%2?14:-14), h=2+(i%2?1:2);
+      for(let l=0;l<h;l++) C.box(x,GROUND-(l+1)*ROWH,30,32,C.pickMat());
+      C.pig(x+15, GROUND-h*ROWH-14, i===n-1?C.boss():C.reg()); } } },
+  { name:'hanging', min:7, build(C){            // stacked platforms, pigs on each tier
+    const tiers=2+Math.floor(C.diff*2);
+    for(let lv=0;lv<tiers;lv++){ const y=GROUND-lv*72, x=C.baseX+(lv%2?44:0);
+      C.box(x,y-70,18,68,'wood'); C.box(x+C.span*0.46,y-70,18,68,'wood');
+      C.box(x-8,y-86,C.span*0.46+44,16,'brick');
+      C.pig(x+C.span*0.23, y-86-14, lv===tiers-1?C.boss():C.reg()); } } },
+  // --- boss (late) ---
+  { name:'boss', min:11, build(C){              // king on a rock pedestal flanked by corporal-guarded towers
+    const ph=2+Math.floor(C.diff*2);
+    for(let l=0;l<ph;l++) C.box(C.baseX+C.span/2-17,GROUND-(l+1)*ROWH,34,32,'rock');
+    C.pig(C.baseX+C.span/2, GROUND-ph*ROWH-14, 'king');
+    for(const gx of [C.baseX+20, C.baseX+C.span-20]){
+      for(let l=0;l<ph+1;l++) C.box(gx,GROUND-(l+1)*ROWH,30,32, l<2?'rock':'brick');
+      C.pig(gx+15, GROUND-(ph+1)*ROWH-14, 'corporal'); }
+    C.pig(C.baseX+C.span/2, GROUND-16, C.reg()); } },
+];
+/* Per-theme 20-level plan: seeded, no immediate repeats, difficulty-gated, and biome-WEIGHTED
+   so each city leans toward its own structure styles → layouts differ across themes, not just per level. */
+const FAVS={ desert:['tower','twinTowers','tunnel','bridge','fortress'],
+             mountain:['fortress','wideWall','bunker','staircase','boss'],
+             coast:['pyramid','cantilever','hanging','boss','fortress'],
+             forest:['zigzag','scatter','staircase','hanging','tower'] };
+const PLANS={};
+function planFor(theme){ const rng=rand(7000+THEME_NAMES.indexOf(theme)*131);
+  const fav=FAVS[THEMES[theme].biome]||[]; const plan=[]; let prev=null;
+  for(let i=0;i<20;i++){ const base=TEMPLATES.filter(t=>i>=t.min);
+    const pool=[]; for(const t of base){ pool.push(t); if(fav.includes(t.name)) pool.push(t,t); }  // favorites weighted ×3
+    let pick,guard=0; do{ pick=pool[Math.floor(rng()*pool.length)]; }while(pool.length>1 && pick.name===prev && guard++<10);
+    plan.push(pick); prev=pick.name; } return plan; }
+function templateFor(theme,idx){ if(!PLANS[theme]) PLANS[theme]=planFor(theme); return PLANS[theme][idx]; }
+
+function genLevel(theme, idx){
+  const rng=rand(1000+idx*97+THEME_NAMES.indexOf(theme)*7919);
+  const diff=idx/19, boxes=[], pigs=[];
+  const span=clamp(W*0.40,300,760);
+  const baseX=clamp(W*0.46, SLING.x+250, Math.max(SLING.x+250, W-span-40));
+  // Issue 5: each biome favours different building materials so themes feel distinct.
+  const biome=THEMES[theme].biome;
+  const MATBIAS={ desert:['glass','glass','brick','wood','rock'],   // Atyrau: industrial glass/steel
+                  mountain:['brick','brick','wood','rock','glass'],  // Almaty: urban brick & stone
+                  coast:['rock','brick','rock','wood','glass'],      // Aktau: white stone cliffs
+                  forest:['wood','wood','glass','brick','rock'] }[biome] || ['glass','wood','brick','rock'];
+  function pickMat(soft){ if(soft) return rng()<0.65?'glass':'wood';
+    let m=MATBIAS[Math.floor(rng()*MATBIAS.length)];
+    if((m==='rock'&&diff<0.4)||(m==='brick'&&diff<0.15)) m=rng()<0.5?'wood':'glass'; // keep early levels soft
+    return m; }
+  function box(x,y,w,h,mat){ w=w||34; h=h||32; if(x+w>W-6||x<SLING.x+40) return; boxes.push(makeBox(x,y,w,h,mat||pickMat())); }
+  function pig(x,y,type){ pigs.push(makePig(clamp(x,baseX-40,W-30),y,type||pigTypeFor(diff,rng,false))); }
+  const C={ diff, rng, box, pig, pickMat, baseX, span,
+    boss:()=>pigTypeFor(diff,rng,true), reg:()=>pigTypeFor(diff,rng,false) };
+
+  templateFor(theme,idx).build(C);
+
+  // --- playability safeguards ---
+  if(!pigs.length) pig(baseX+span/2, GROUND-16, 'regular');
+  // ensure a king from level 13+ (promote the highest pig)
+  if(idx>=12 && !pigs.some(p=>p.type==='king')){ const top=pigs.reduce((a,b)=>b.y<a.y?b:a, pigs[0]);
+    if(top){ top.type='king'; Object.assign(top, sizeForPig('king')); } }
+  // cap to a single king so levels stay beatable
+  let kingSeen=false; pigs.forEach(p=>{ if(p.type==='king'){ if(kingSeen){ p.type='corporal'; Object.assign(p,sizeForPig('corporal')); } else kingSeen=true; } });
+
+  // bird loadout — at least one per pig (specials make this fair, not trivial)
+  const pool=['red']; if(idx>=2)pool.push('yellow'); if(idx>=5)pool.push('blue'); if(idx>=8)pool.push('black');
+  const birdCount=clamp(pigs.length+1-Math.floor(diff*1.5), 3, 8), birds=[];
+  for(let i=0;i<birdCount;i++) birds.push(pool[Math.floor(rng()*pool.length)]); birds[0]='red';
+  // give a bomb when a king is present (so the boss is always tractable)
+  if(idx>=8 && pigs.some(p=>p.type==='king') && !birds.includes('black')) birds[Math.min(1,birds.length-1)]='black';
+
+  return { boxes, pigs, birds };
+}
+function pigTypeFor(diff,rng,canBoss){
+  const r=rng();
+  if(canBoss && diff>0.6 && r<0.25) return 'king';
+  if(diff>0.4 && r<0.35) return 'corporal';
+  if(r<0.45) return 'small';
+  return 'regular';
+}
+function sizeForPig(type){ const d=PIGS[type]; return { r:d.r, hp:d.hp, maxhp:d.hp, type }; }
+function makeBox(x,y,w,h,mat){ const m=MAT[mat]; return {x,y,w,h,vx:0,vy:0,mat,hp:m.hp,maxhp:m.hp,mass:m.mass,rot:0,vrot:0,support:false,sleeping:false}; }
+function makePig(x,y,type){ const d=PIGS[type]; return {x,y,vx:0,vy:0,r:d.r,hp:d.hp,maxhp:d.hp,type}; }
+
+/* ============================ Game state ============================ */
+const SLING={ x:170, y:0 }; let state=null;
+/* Issue 4 fix: gentler gravity + softer launch = slower, floatier, more readable arcs.
+   LAUNCH_POWER and MAX_PULL are named so the launch, aim clamp and preview all stay in sync. */
+const G=800, DRAG=0.999, LAUNCH_POWER=9.5, MAX_PULL=108;
+
+function startLevel(theme, idx){
+  const lvl=genLevel(theme,idx); SLING.y=GROUND-90;
+  // max score reference for star thresholds
+  let blockVal=0; lvl.boxes.forEach(b=>blockVal+=MAT[b.mat].value);
+  let pigVal=0; lvl.pigs.forEach(p=>pigVal+=PIGS[p.type].score);
+  const maxScore = pigVal + blockVal*0.5 + lvl.birds.length*1000;
+  state={ theme, idx, boxes:lvl.boxes, pigs:lvl.pigs, queue:lvl.birds.slice(),
+    bird:null, extra:[], aiming:false, phase:'ready', particles:[], floats:[], settleT:0,
+    score:0, maxScore, boxesAwake:false, calmT:0 };
+  presettle();                 // Issue 2: let the tower come to rest invisibly, then freeze it
+  $('#menu').classList.add('hidden'); $('#levelSelect').classList.add('hidden');
+  $('#hud').classList.remove('hidden'); $('#endCard').classList.remove('show');
+  Snd.startMusic(theme); Snd.startAmbient(theme);
+  loadNextBird(); updateHUD();
+}
+function loadNextBird(){ if(!state.queue.length){ state.bird=null; return; }
+  const type=state.queue.shift(), def=BIRDS[type];
+  state.bird={ type, def, x:SLING.x, y:SLING.y, vx:0, vy:0, r:def.r, launched:false, usedSpecial:false, alive:true }; }
+function updateHUD(){ $('#hudInfo').textContent=`${THEMES[state.theme].label} · Lvl ${state.idx+1}/20 · Pigs: ${state.pigs.length}`;
+  $('#hudScore').textContent=`Score: ${state.score}`; }
+function addScore(pts,x,y){ state.score+=pts; if(x!=null) state.floats.push({x,y,txt:'+'+pts,life:0.9}); }
+
+/* ============================ Input ============================ */
+function pointer(e){ const r=cv.getBoundingClientRect(), t=e.touches?e.touches[0]:e; return {x:t.clientX-r.left,y:t.clientY-r.top}; }
+cv.addEventListener('mousedown',onDown); cv.addEventListener('touchstart',onDown,{passive:false});
+cv.addEventListener('mousemove',onMove); cv.addEventListener('touchmove',onMove,{passive:false});
+addEventListener('mouseup',onUp); addEventListener('touchend',onUp);
+function onDown(e){ Snd.init(); Snd.resume(); if(!state||!state.bird)return; const p=pointer(e);
+  if(state.bird.launched){ triggerSpecial(); return; }
+  if(Math.hypot(p.x-state.bird.x,p.y-state.bird.y)<70){ state.aiming=true; e.preventDefault(); } }
+function onMove(e){ if(!state||!state.aiming)return; const p=pointer(e); e.preventDefault();
+  const dx=p.x-SLING.x, dy=p.y-SLING.y, d=Math.min(MAX_PULL,Math.hypot(dx,dy)), a=Math.atan2(dy,dx);
+  state.bird.x=SLING.x+Math.cos(a)*d; state.bird.y=SLING.y+Math.sin(a)*d; }
+function onUp(){ if(!state||!state.aiming)return; state.aiming=false;
+  const b=state.bird; const dx=SLING.x-b.x, dy=SLING.y-b.y, pull=Math.hypot(dx,dy);
+  // Issue 1: ignore micro-pulls (snap the bird back, don't waste it) and guarantee a real flight speed
+  if(pull<14){ b.x=SLING.x; b.y=SLING.y; return; }
+  let vx=dx*LAUNCH_POWER, vy=dy*LAUNCH_POWER; const sp=Math.hypot(vx,vy), MIN=280;
+  if(sp<MIN){ const k=MIN/sp; vx*=k; vy*=k; }
+  b.vx=vx; b.vy=vy; b.launched=true; b.launchT=now(); state.phase='flying'; Snd.launch(); }
+addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); triggerSpecial(); } });
+function triggerSpecial(){ const b=state&&state.bird; if(!b||!b.launched||b.usedSpecial||!b.alive)return; b.usedSpecial=true;
+  if(b.def.special==='dash'){ b.vx*=1.9; b.vy*=1.9; Snd.pop(); }
+  else if(b.def.special==='split'){ Snd.pop();
+    for(const off of [-0.25,0.25]){ const a=Math.atan2(b.vy,b.vx)+off, sp=Math.hypot(b.vx,b.vy);
+      state.extra.push({type:'blue',def:BIRDS.blue,x:b.x,y:b.y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,r:BIRDS.blue.r,launched:true,usedSpecial:true,alive:true}); } }
+  else if(b.def.special==='bomb'){ explode(b.x,b.y,150,360); b.alive=false; Snd.boom(); } }
+function explode(x,y,radius,force){
+  wake();
+  for(const box of state.boxes){ const cx=box.x+box.w/2, cy=box.y+box.h/2, d=Math.hypot(cx-x,cy-y)||1;
+    if(d<radius){ const f=1-d/radius; box.vx+=(cx-x)/d*force*f/box.mass; box.vy+=((cy-y)/d*force*f-60)/box.mass;
+      box.vrot+=(Math.random()-0.5)*8*f; box.hp-=120*f; } }
+  for(const pig of state.pigs){ const d=Math.hypot(pig.x-x,pig.y-y)||1;
+    if(d<radius){ const f=1-d/radius; pig.vx+=(pig.x-x)/d*force*f; pig.vy+=(pig.y-y)/d*force*f-60; pig.hp-=90*f; } }
+  for(let i=0;i<20;i++) state.particles.push({x,y,vx:Math.random()*460-230,vy:Math.random()*460-330,life:.55,c:'#ff8a3a'});
+}
+
+/* ============================ Physics ============================ */
+function step(dt){
+  const movers=[]; if(state.bird&&state.bird.launched&&state.bird.alive) movers.push(state.bird);
+  state.extra.forEach(e=>e.alive&&movers.push(e));
+  for(const b of movers){ b.vy+=G*dt; b.vx*=DRAG; b.vy*=DRAG; b.x+=b.vx*dt; b.y+=b.vy*dt; collideCircleWorld(b,true); }
+  for(const p of state.pigs){ p.vy+=G*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.98; collideCircleWorld(p,false); }
+  // Issue 2: boxes only simulate while "awake" (disturbed). Sleeping boxes act as static colliders → no start jitter.
+  if(state.boxesAwake){ integrateBoxes(dt,false);
+    let mx=0; for(const bx of state.boxes) mx=Math.max(mx, Math.abs(bx.vx)+Math.abs(bx.vy));
+    if(mx<10){ state.calmT+=dt; if(state.calmT>0.4){ state.boxesAwake=false; for(const bx of state.boxes){bx.vx=0;bx.vy=0;bx.vrot=0;} } }
+    else state.calmT=0; }
+  for(const b of movers) for(const bx of state.boxes) collideCircleBox(b,bx,true);
+  for(const p of state.pigs) for(const bx of state.boxes) collideCircleBox(p,bx,false);
+  for(const b of movers) for(const p of state.pigs){ const d=Math.hypot(b.x-p.x,b.y-p.y);
+    if(d<b.r+p.r){ const imp=Math.hypot(b.vx,b.vy); p.hp-=imp*0.06; p.vx+=b.vx*0.4; p.vy+=b.vy*0.4-40; b.vx*=0.5; b.vy*=0.5; if(imp>120)Snd.thud(0.2); } }
+  // remove dead boxes/pigs + score
+  state.boxes=state.boxes.filter(b=>{ if(b.hp<=0){ shatter(b); addScore(MAT[b.mat].value, b.x+b.w/2, b.y); Snd.breakSound(b.mat); wake(); return false; } return true; });
+  state.pigs=state.pigs.filter(p=>{ if(p.hp<=0){ burst(p.x,p.y,THEMES[state.theme].pig); addScore(PIGS[p.type].score, p.x, p.y-p.r); Snd.pop(); return false; } return true; });
+  state.particles=state.particles.filter(pt=>{ pt.x+=pt.vx*dt; pt.y+=pt.vy*dt;
+    if(pt.fluff){ pt.vy+=120*dt; pt.vx+=Math.sin((pt.y+pt.x)*0.05)*8*dt; pt.vx*=0.97; } else pt.vy+=600*dt;
+    pt.life-=dt; return pt.life>0; });
+  state.floats=state.floats.filter(f=>{ f.y-=30*dt; f.life-=dt; return f.life>0; });
+  checkBirdEnd(); checkWinLose(dt); updateHUD();
+}
+function burst(x,y,c){ for(let i=0;i<9;i++) state.particles.push({x,y,vx:Math.random()*320-160,vy:Math.random()*320-220,life:.45,c}); }
+function poof(x,y,c){ Snd.thud(0.07);   // feather/fur puff when a landed bird despawns
+  for(let i=0;i<16;i++) state.particles.push({x,y,vx:Math.random()*180-90,vy:Math.random()*-150-20,life:.7+Math.random()*0.3,
+    c:(i%3?c:'#fff'), sz:4+Math.random()*4, fluff:true}); }
+function wake(){ if(state){ state.boxesAwake=true; state.calmT=0; } }
+/* shared box integrator: gravity, ground/walls, mass-weighted stacking, rot-settle. quiet=no landing sfx (pre-settle). */
+function integrateBoxes(dt,quiet){
+  for(const bx of state.boxes){ bx.support=false; bx.vy+=G*dt; bx.x+=bx.vx*dt; bx.y+=bx.vy*dt; bx.vx*=0.92;
+    bx.rot+=bx.vrot*dt; bx.vrot*=0.96;
+    if(bx.y+bx.h>GROUND){ bx.y=GROUND-bx.h; if(!quiet&&Math.abs(bx.vy)>180)Snd.thud(0.15); bx.vy=0; bx.vx*=0.6; bx.support=true; }
+    if(bx.x<0){bx.x=0;bx.vx*=-0.3;} if(bx.x+bx.w>W){bx.x=W-bx.w;bx.vx*=-0.3;} }
+  for(let it=0;it<6;it++) for(let i=0;i<state.boxes.length;i++) for(let j=i+1;j<state.boxes.length;j++)
+    resolveBoxBox(state.boxes[i],state.boxes[j]);
+  for(const bx of state.boxes){ if(bx.support && Math.abs(bx.vy)<25 && Math.abs(bx.vx)<25){ bx.rot*=0.8; bx.vrot*=0.5; if(Math.abs(bx.rot)<0.02)bx.rot=0; } }
+}
+/* run the structure to rest off-screen-in-time, settle pigs onto it, then freeze everything asleep */
+function presettle(){ const dt=1/120;
+  for(let i=0;i<300;i++){ integrateBoxes(dt,true);
+    for(const p of state.pigs){ p.vy+=G*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.9;
+      if(p.y+p.r>GROUND){ p.y=GROUND-p.r; p.vy=0; p.vx*=0.7; }
+      for(const bx of state.boxes) collideCircleBox(p,bx,false); } }
+  for(const b of state.boxes){ b.vx=0; b.vy=0; b.vrot=0; b.rot=0; }
+  for(const p of state.pigs){ p.vx=0; p.vy=0; }
+  state.boxesAwake=false; state.calmT=0;
+}
+function shatter(b){ const m=MAT[b.mat]; for(let i=0;i<m.shards;i++)
+  state.particles.push({x:b.x+Math.random()*b.w,y:b.y+Math.random()*b.h,vx:Math.random()*260-130,vy:Math.random()*-200-30,life:.5,c:m.color}); }
+function collideCircleWorld(b,isBird){ if(b.y+b.r>GROUND){ b.y=GROUND-b.r; b.vy*=-0.35; b.vx*=0.7; if(isBird&&Math.abs(b.vy)<60)b.vy=0; }
+  if(b.x-b.r<0){b.x=b.r;b.vx*=-0.4;} if(b.x+b.r>W){b.x=W-b.r;b.vx*=-0.4;} }
+/* mass-weighted box-box resolution -> heavy rock barely moves, light glass gets shoved */
+function resolveBoxBox(a,b){
+  if(a.x+a.w<=b.x||b.x+b.w<=a.x||a.y+a.h<=b.y||b.y+b.h<=a.y)return;
+  const ox=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x), oy=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
+  const ma=a.mass, mb=b.mass, sa=mb/(ma+mb), sb=ma/(ma+mb);
+  if(ox<oy){ const dir=a.x<b.x?-1:1; a.x+=dir*ox*sa; b.x-=dir*ox*sb; const v=(a.vx*ma+b.vx*mb)/(ma+mb); a.vx=v*0.5; b.vx=v*0.5; }
+  else { const dir=a.y<b.y?-1:1; a.y+=dir*oy*sa; b.y-=dir*oy*sb;
+    if(dir<0){ a.vy=Math.min(a.vy,0); b.vy=Math.max(b.vy,0); a.support=true; }
+    else { b.vy=Math.min(b.vy,0); a.vy=Math.max(a.vy,0); b.support=true; }
+    a.vx*=0.85; b.vx*=0.85; } }
+function collideCircleBox(c,b,isBird){
+  const nx=clamp(c.x,b.x,b.x+b.w), ny=clamp(c.y,b.y,b.y+b.h), dx=c.x-nx, dy=c.y-ny, d=Math.hypot(dx,dy);
+  if(d>=c.r)return;
+  const dist=d||0.01, ux=dx/dist, uy=dy/dist, pen=c.r-dist; c.x+=ux*pen; c.y+=uy*pen;
+  if(isBird) wake();                       // a bird strike wakes the structure so it can topple
+  const speed=Math.hypot(c.vx,c.vy), m=MAT[b.mat];
+  // material-aware damage: subtract threshold, scale by k; glass low thr -> easy break
+  const dmg=Math.max(0,speed-m.thr)*m.k*(isBird?1.6:1);
+  if(dmg>0){ b.hp-=dmg; b.vx+=c.vx*0.25/b.mass; b.vy+=c.vy*0.25/b.mass; b.vrot+=(c.vx*uy-c.vy*ux)*0.002; if(isBird&&speed>200)Snd.thud(0.22); }
+  const dot=c.vx*ux+c.vy*uy; c.vx-=1.4*dot*ux; c.vy-=1.4*dot*uy; c.vx*=0.6; c.vy*=0.6; }
+/* Issue 3+4: land by LOW SPEED ALONE (not ground contact, so birds resting on blocks settle too),
+   plus an 8s flight timeout; then linger briefly and vanish in a puff of feathers. */
+const LAND_SPEED=36, LAND_HOLD=0.45, LINGER=1.3, MAXFLIGHT=8;
+function landAndVanish(b){
+  if(!b.landed){ const speed=Math.hypot(b.vx,b.vy);
+    b._slowT = speed<LAND_SPEED ? (b._slowT||0)+1/120 : 0;
+    const off = b.x>W+60||b.x<-60||b.y>H+60, tooLong=(now()-(b.launchT||now()))>MAXFLIGHT;
+    if(off||b._slowT>LAND_HOLD||tooLong){ b.landed=true; b.landT=now(); b.vx*=0.2; b.vy*=0.2;
+      if(off){ poof(clamp(b.x,10,W-10),clamp(b.y,10,GROUND),b.def.color); b.alive=false; } }
+  } else if(now()-b.landT>LINGER){ poof(b.x,b.y,b.def.color); b.alive=false; }
+}
+function checkBirdEnd(){ const b=state.bird;
+  if(b&&b.launched&&b.alive) landAndVanish(b);
+  for(const e of state.extra){ if(e.alive){ e.launchT=e.launchT||now(); landAndVanish(e); } }
+  state.extra=state.extra.filter(e=>e.alive); }
+function checkWinLose(dt){
+  if(state.phase==='won'||state.phase==='lost')return;
+  if(state.pigs.length===0){ state.phase='won'; onWin(); return; }
+  const flying=state.bird&&state.bird.alive, extras=state.extra.length;
+  if(!flying&&!extras){ if(!state.queue.length){ state.settleT+=dt; if(state.settleT>1.4){ state.phase='lost'; onLose(); } }
+    else if(!state.bird||!state.bird.alive){ loadNextBird(); state.phase='ready'; updateHUD(); } } }
+function starsForScore(){ const r=state.score/Math.max(1,state.maxScore);
+  return r>=0.8?3:(r>=0.55?2:1); }
+function onWin(){ const leftover=state.queue.length+(state.bird&&!state.bird.launched?1:0);
+  state.score+=leftover*1000; const stars=starsForScore(); saveStars(state.theme,state.idx,stars);
+  Snd.stopAmbient(); Snd.stopMusic(); Snd.win();
+  showEnd(`Level cleared!  ${'★'.repeat(stars)}${'☆'.repeat(3-stars)}`, true); }
+function onLose(){ Snd.stopAmbient(); Snd.stopMusic(); Snd.lose(); showEnd('Out of birds — pigs survived!', false); }
+function showEnd(msg,win){ const el=$('#endCard'); el.classList.add('show'); const nextIdx=(state.idx+1)%20;
+  el.innerHTML=`<h2>${msg}</h2><div class="score">Score: ${state.score}</div><div class="row">
+    <button id="retry">Retry</button> ${win?'<button id="next">Next level</button>':''}
+    <button class="ghost" id="toLevels">Levels</button></div>`;
+  $('#retry').onclick=()=>startLevel(state.theme,state.idx);
+  if($('#next')) $('#next').onclick=()=>startLevel(state.theme,nextIdx);
+  $('#toLevels').onclick=()=>openLevels(state.theme); }
+
+/* ============================ Drawing: birds, pigs, materials, scenery ============================ */
+function drawBird(b){ ctx.save(); ctx.translate(b.x,b.y); const ang=b.launched?Math.atan2(b.vy,b.vx):0; ctx.rotate(ang*0.6);
+  const r=b.r, def=b.def;
+  if(b.type==='yellow'){ ctx.fillStyle=def.color; ctx.beginPath();
+    ctx.moveTo(r*1.5,0); ctx.quadraticCurveTo(0,-r,-r*0.9,-r*0.5); ctx.quadraticCurveTo(-r*1.3,0,-r*0.9,r*0.5); ctx.quadraticCurveTo(0,r,r*1.5,0); ctx.fill();
+    ctx.fillStyle=def.belly; ctx.beginPath(); ctx.ellipse(-r*0.2,r*0.35,r*0.5,r*0.3,0,0,7); ctx.fill();
+    ctx.strokeStyle=def.color; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(-r*0.6,-r*0.5); ctx.lineTo(-r*1.4,-r); ctx.moveTo(-r*0.8,-r*0.2); ctx.lineTo(-r*1.6,-r*0.4); ctx.stroke(); }
+  else if(b.type==='black'){ ctx.fillStyle=def.color; ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill();
+    ctx.fillStyle=def.belly; ctx.beginPath(); ctx.ellipse(0,r*0.4,r*0.55,r*0.4,0,0,7); ctx.fill();
+    ctx.strokeStyle='#111'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(0,-r); ctx.lineTo(-3,-r*1.6); ctx.moveTo(0,-r); ctx.lineTo(3,-r*1.55); ctx.moveTo(0,-r); ctx.lineTo(0,-r*1.7); ctx.stroke(); }
+  else { ctx.fillStyle=def.color; ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill();
+    ctx.fillStyle=def.belly; ctx.beginPath(); ctx.ellipse(0,r*0.45,r*0.6,r*0.42,0,0,7); ctx.fill();
+    ctx.strokeStyle=def.color; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(-2,-r); ctx.lineTo(-4,-r*1.5); ctx.moveTo(3,-r); ctx.lineTo(5,-r*1.45); ctx.stroke();
+    if(b.type==='blue'){ ctx.fillStyle='#1c6fa5'; ctx.beginPath(); ctx.arc(0,-r*0.4,r*0.5,Math.PI,0); ctx.fill(); } }
+  ctx.fillStyle=def.color; ctx.beginPath(); ctx.moveTo(-r*0.8,0); ctx.lineTo(-r*1.5,-r*0.4); ctx.lineTo(-r*1.5,r*0.4); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(r*0.35,-r*0.25,r*0.32,0,7); ctx.arc(r*0.7,-r*0.25,r*0.26,0,7); ctx.fill();
+  ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(r*0.45,-r*0.25,r*0.13,0,7); ctx.arc(r*0.72,-r*0.25,r*0.12,0,7); ctx.fill();
+  ctx.strokeStyle='#000'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(r*0.1,-r*0.7); ctx.lineTo(r*0.6,-r*0.45); ctx.moveTo(r*0.95,-r*0.55); ctx.lineTo(r*0.55,-r*0.45); ctx.stroke();
+  ctx.fillStyle='#f5a623'; ctx.beginPath(); ctx.moveTo(r*0.85,-r*0.05); ctx.lineTo(r*1.4,r*0.05); ctx.lineTo(r*0.85,r*0.22); ctx.fill();
+  ctx.restore(); }
+function drawPig(p,T){ ctx.save(); ctx.translate(p.x,p.y); const r=p.r, d=PIGS[p.type];
+  ctx.fillStyle=T.pig; ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-r*0.3,-r*0.25,r*0.22,0,7); ctx.arc(r*0.3,-r*0.25,r*0.22,0,7); ctx.fill();
+  ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(-r*0.3,-r*0.25,r*0.1,0,7); ctx.arc(r*0.3,-r*0.25,r*0.1,0,7); ctx.fill();
+  ctx.fillStyle='#5fa83a'; ctx.beginPath(); ctx.ellipse(0,r*0.3,r*0.38,r*0.27,0,0,7); ctx.fill();
+  ctx.fillStyle='#3f7a26'; ctx.beginPath(); ctx.arc(-r*0.12,r*0.3,r*0.07,0,7); ctx.arc(r*0.12,r*0.3,r*0.07,0,7); ctx.fill();
+  ctx.fillStyle=T.pig; ctx.beginPath(); ctx.moveTo(-r*0.9,-r*0.6); ctx.lineTo(-r*0.5,-r*0.95); ctx.lineTo(-r*0.4,-r*0.6); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(r*0.9,-r*0.6); ctx.lineTo(r*0.5,-r*0.95); ctx.lineTo(r*0.4,-r*0.6); ctx.fill();
+  if(d.crown){ ctx.fillStyle='#ffcf33'; ctx.beginPath(); ctx.moveTo(-r*0.7,-r*0.8); ctx.lineTo(-r*0.7,-r*1.25); ctx.lineTo(-r*0.35,-r*0.95);
+    ctx.lineTo(0,-r*1.35); ctx.lineTo(r*0.35,-r*0.95); ctx.lineTo(r*0.7,-r*1.25); ctx.lineTo(r*0.7,-r*0.8); ctx.fill();
+    ctx.fillStyle='#e53b3b'; ctx.beginPath(); ctx.arc(0,-r*1.05,r*0.1,0,7); ctx.fill(); }
+  if(d.helmet){ ctx.fillStyle='#6b7280'; ctx.beginPath(); ctx.arc(0,-r*0.15,r*0.92,Math.PI,0); ctx.fill();
+    ctx.fillStyle='#4b5563'; ctx.fillRect(-r,-r*0.2,r*2,r*0.18); }
+  if(d.rank){ ctx.strokeStyle='#3a2a00'; ctx.lineWidth=2; ctx.beginPath();
+    ctx.moveTo(-r*0.5,r*0.55); ctx.quadraticCurveTo(0,r*0.4,r*0.5,r*0.55); ctx.stroke(); } // moustache
+  ctx.restore(); }
+function drawBox(b,T){ ctx.save(); const cx=b.x+b.w/2, cy=b.y+b.h/2; ctx.translate(cx,cy); ctx.rotate(b.rot);
+  const m=MAT[b.mat]; ctx.globalAlpha=m.alpha; ctx.fillStyle=m.color; ctx.fillRect(-b.w/2,-b.h/2,b.w,b.h);
+  ctx.globalAlpha=1; ctx.strokeStyle='#00000040'; ctx.lineWidth=2; ctx.strokeRect(-b.w/2,-b.h/2,b.w,b.h);
+  if(b.mat==='glass'){ ctx.strokeStyle='#ffffff80'; ctx.beginPath(); ctx.moveTo(-b.w/2+3,-b.h/2+3); ctx.lineTo(b.w/2-3,b.h/2-3); ctx.stroke(); }
+  if(b.mat==='brick'){ ctx.strokeStyle='#00000030'; for(let yy=-b.h/2+8;yy<b.h/2;yy+=8){ ctx.beginPath(); ctx.moveTo(-b.w/2,yy); ctx.lineTo(b.w/2,yy); ctx.stroke(); } }
+  if(b.mat==='wood'){ ctx.strokeStyle='#00000022'; for(let xx=-b.w/2+8;xx<b.w/2;xx+=10){ ctx.beginPath(); ctx.moveTo(xx,-b.h/2); ctx.lineTo(xx,b.h/2); ctx.stroke(); } }
+  if(b.hp<b.maxhp){ ctx.strokeStyle='#00000055'; ctx.beginPath(); ctx.moveTo(-b.w/2+4,-b.h/2+4); ctx.lineTo(b.w/2-6,b.h/2-2); ctx.stroke(); }
+  ctx.restore(); }
+
+function drawThemeBackground(theme,t){ const T=THEMES[theme]; const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,T.sky[0]); g.addColorStop(1,T.sky[1]); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  if(T.biome==='desert'){            // Atyrau — sandy haze, dunes, nodding oil pumpjacks + pipeline
+    ctx.fillStyle='#fff0c8'; ctx.beginPath(); ctx.arc(W*0.78,H*0.22,52,0,7); ctx.fill();
+    ctx.fillStyle='#d9b074'; for(let i=0;i<4;i++){ const x=(i*W*0.34-(t*6)%W+W)%W; ctx.beginPath(); ctx.ellipse(x,GROUND,200,72,0,Math.PI,0); ctx.fill(); }
+    ctx.strokeStyle='#9c7d52'; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(0,GROUND-18); ctx.lineTo(W,GROUND-18); ctx.stroke();
+    drawPumpjack(W*0.30,GROUND-18,t); drawPumpjack(W*0.62,GROUND-18,t+1.1); drawPumpjack(W*0.88,GROUND-18,t+2.3); }
+  else if(T.biome==='mountain'){     // Almaty — snow-capped range + city skyline at the foot
+    ctx.fillStyle='#fbf7e8'; ctx.beginPath(); ctx.arc(W*0.2,H*0.2,46,0,7); ctx.fill();
+    drawMountains(t); drawSkyline(GROUND-2);
+    ctx.strokeStyle='#3f6b3a'; ctx.lineWidth=3; for(let i=0;i<6;i++){ const x=(i*W*0.18+40)%W; drawConifer(x,GROUND, .7); } }
+  else if(T.biome==='coast'){        // Aktau — turquoise Caspian + white Utah-like cliffs
+    ctx.fillStyle='#fff4c2'; ctx.beginPath(); ctx.arc(W*0.16,H*0.2,48,0,7); ctx.fill();
+    const sea=H*0.5; ctx.fillStyle='#37b3c9'; ctx.fillRect(0,sea,W,GROUND-sea);
+    ctx.fillStyle='#7fd6e2'; for(let i=0;i<12;i++){ const x=(i*130-(t*30)%W+W)%W; ctx.beginPath(); ctx.arc(x,sea+8+Math.sin(t*2+i)*3,16,Math.PI,0); ctx.fill(); }
+    drawCliffs(sea); }
+  else {                              // Kostanai — dense taiga: layered pine ridges
+    ctx.fillStyle='#cfe0cf'; ctx.beginPath(); ctx.arc(W*0.8,H*0.18,40,0,7); ctx.fill();
+    const greens=['#5f8c5a','#487a45','#356633']; for(let layer=0;layer<3;layer++){ ctx.fillStyle=greens[layer];
+      const yb=GROUND-(2-layer)*46; for(let x=-40;x<W+40;x+=70-layer*8) drawConifer(x+ (layer*20), yb, 1.1-layer*0.18); } }
+  ctx.fillStyle=T.ground; ctx.fillRect(0,GROUND,W,H-GROUND); ctx.fillStyle='#00000022'; ctx.fillRect(0,GROUND,W,6); }
+
+function drawPumpjack(x,y,t){ const a=Math.sin(t*1.6)*0.5;       // nodding "donkey" oil pump
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle='#5a5a5a'; ctx.fillRect(-3,-6,6,6);                 // base
+  ctx.strokeStyle='#444'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-14,-46); ctx.lineTo(14,-46); ctx.closePath(); ctx.stroke(); // A-frame
+  ctx.save(); ctx.translate(0,-46); ctx.rotate(a);                  // walking beam
+  ctx.fillStyle='#6b6b6b'; ctx.fillRect(-46,-4,92,8);
+  ctx.fillStyle='#3a3a3a'; ctx.beginPath(); ctx.moveTo(-46,4); ctx.lineTo(-60,28); ctx.lineTo(-40,28); ctx.fill(); // horse head
+  ctx.restore();
+  ctx.strokeStyle='#3a3a3a'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(40,-46-Math.cos(a)*40); ctx.lineTo(40,0); ctx.stroke(); // polished rod
+  ctx.restore(); }
+function drawMountains(t){ const base=GROUND-2;
+  const peaks=[[W*0.15,260],[W*0.4,330],[W*0.62,290],[W*0.85,350]];
+  for(const [x,h] of peaks){ ctx.fillStyle='#8a96a8'; ctx.beginPath(); ctx.moveTo(x-h*0.8,base); ctx.lineTo(x,base-h); ctx.lineTo(x+h*0.8,base); ctx.fill();
+    ctx.fillStyle='#f3f7ff'; ctx.beginPath(); ctx.moveTo(x-h*0.22,base-h*0.72); ctx.lineTo(x,base-h); ctx.lineTo(x+h*0.22,base-h*0.72);
+    ctx.lineTo(x+h*0.1,base-h*0.6); ctx.lineTo(x,base-h*0.7); ctx.lineTo(x-h*0.1,base-h*0.6); ctx.fill(); } }
+function drawSkyline(base){ ctx.fillStyle='#5b6472';
+  let x=0, seed=7; while(x<W){ const w=24+(seed=(seed*9301+49297)%233280)/233280*40, h=40+(seed/233280)*150;
+    ctx.fillRect(x,base-h,w,h); ctx.fillStyle='#ffe9772a'; for(let wy=base-h+8;wy<base-8;wy+=14) for(let wx=x+4;wx<x+w-4;wx+=10) ctx.fillRect(wx,wy,4,6);
+    ctx.fillStyle='#4b5563'; x+=w+6; } }
+function drawCliffs(base){ const tones=['#efe7d4','#e3d8bf','#d6c8a8'];     // flat-topped white mesas
+  for(let i=0;i<4;i++){ const x=i*W*0.27 - 40, w=W*0.22, top=base-60-i%2*40;
+    for(let s=0;s<3;s++){ ctx.fillStyle=tones[s]; ctx.fillRect(x, top+s*((GROUND-top)/3), w, (GROUND-top)/3+1); }
+    ctx.fillStyle='#fff'; ctx.fillRect(x,top,w,8); } }
+function drawConifer(x,y,s){ ctx.fillStyle='#5a3b1f'; ctx.fillRect(x-3*s,y-18*s,6*s,18*s);
+  ctx.fillStyle=ctx.fillStyle; for(let k=0;k<3;k++){ ctx.fillStyle=`rgb(${40+k*10},${100+k*12},${50+k*8})`;
+    ctx.beginPath(); ctx.moveTo(x-26*s+k*4*s,y-12*s-k*16*s); ctx.lineTo(x,y-44*s-k*16*s); ctx.lineTo(x+26*s-k*4*s,y-12*s-k*16*s); ctx.fill(); } }
+
+function drawQueue(t){ const waiting=state.queue.slice(), startX=SLING.x-52;
+  for(let i=0;i<waiting.length;i++){ const def=BIRDS[waiting[i]], x=startX-i*40, y=GROUND-14+Math.sin(t*3+i)*3;
+    drawBird({x,y,r:def.r*0.85,def,type:waiting[i],launched:false,vx:0,vy:0}); } }
+
+/* ============================ Menu animated scene ============================ */
+const menuBirds=[], flock=[];
+function initMenuScene(){ menuBirds.length=0; flock.length=0; const types=Object.keys(BIRDS);
+  for(let i=0;i<5;i++) menuBirds.push({x:Math.random()*W,y:H*0.2+Math.random()*H*0.4,s:0.7+Math.random()*0.9,vx:40+Math.random()*60,type:types[i%types.length],ph:Math.random()*6});
+  for(let i=0;i<14;i++) flock.push({x:Math.random()*W,y:H*0.12+Math.random()*H*0.35,s:0.5+Math.random(),vx:25+Math.random()*45,ph:Math.random()*6}); }
+function renderMenuScene(t,dt){ const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#8fd0ff'); g.addColorStop(1,'#cdeffd'); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff3b0'; ctx.beginPath(); ctx.arc(W*0.82,H*0.2,55,0,7); ctx.fill();
+  ctx.fillStyle='#ffffffcc'; for(let i=0;i<4;i++){ const x=((i*W*0.3-t*15)%(W+200)+W+200)%(W+200)-100; cloud(x,H*0.15+i*40,1+(i%2)*0.4); }
+  ctx.fillStyle='#7ec97a'; ctx.beginPath(); ctx.moveTo(0,H); for(let x=0;x<=W;x+=40) ctx.lineTo(x,H*0.7+Math.sin(x*0.01+t*0.3)*20); ctx.lineTo(W,H); ctx.fill();
+  ctx.fillStyle='#5aa85a'; ctx.beginPath(); ctx.moveTo(0,H); for(let x=0;x<=W;x+=40) ctx.lineTo(x,H*0.8+Math.cos(x*0.012+t*0.4)*16); ctx.lineTo(W,H); ctx.fill();
+  ctx.strokeStyle='#33445566'; ctx.lineWidth=2; for(const f of flock){ f.x+=f.vx*dt; if(f.x>W+30)f.x=-30; const fl=Math.sin(t*6+f.ph)*5;
+    ctx.beginPath(); ctx.moveTo(f.x-8*f.s,f.y); ctx.quadraticCurveTo(f.x,f.y-6-fl,f.x+8*f.s,f.y); ctx.moveTo(f.x+8*f.s,f.y); ctx.quadraticCurveTo(f.x+16*f.s,f.y-6-fl,f.x+24*f.s,f.y); ctx.stroke(); }
+  for(const b of menuBirds){ b.x+=b.vx*dt; if(b.x>W+60)b.x=-60; const def=BIRDS[b.type], y=b.y+Math.sin(t*2+b.ph)*14;
+    ctx.save(); ctx.translate(b.x,y); ctx.scale(b.s,b.s); drawBird({x:0,y:0,r:def.r,def,type:b.type,launched:true,vx:1,vy:Math.sin(t*3+b.ph)*0.3});
+    const wf=Math.sin(t*9+b.ph)*0.5; ctx.fillStyle=def.color; ctx.beginPath(); ctx.ellipse(-2,2,def.r*0.7,def.r*0.35,wf,0,7); ctx.fill(); ctx.restore(); } }
+function cloud(x,y,s){ ctx.beginPath(); ctx.arc(x,y,22*s,0,7); ctx.arc(x+26*s,y+6,18*s,0,7); ctx.arc(x-24*s,y+6,16*s,0,7); ctx.arc(x+6*s,y-12*s,16*s,0,7); ctx.fill(); }
+
+/* ============================ Render dispatch ============================ */
+function render(t,dt){ if(!state){ renderMenuScene(t,dt); return; }
+  drawThemeBackground(state.theme,t);
+  ctx.strokeStyle='#5a3a1a'; ctx.lineWidth=11; ctx.beginPath(); ctx.moveTo(SLING.x-12,SLING.y+12); ctx.lineTo(SLING.x-14,GROUND); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(SLING.x+10,SLING.y+12); ctx.lineTo(SLING.x+12,GROUND-4); ctx.stroke();
+  drawQueue(t);
+  if(state.aiming&&state.bird){ ctx.fillStyle='#ffffffcc';
+    // simulate with the SAME integrator as flight (gravity + drag) so the preview is accurate
+    let px=state.bird.x,py=state.bird.y,vx=(SLING.x-state.bird.x)*LAUNCH_POWER,vy=(SLING.y-state.bird.y)*LAUNCH_POWER;
+    const fdt=1/120;
+    for(let i=0;i<170;i++){ vy+=G*fdt; vx*=DRAG; vy*=DRAG; px+=vx*fdt; py+=vy*fdt;
+      if(py>GROUND-2||px>W) break; if(i%8===0){ ctx.beginPath(); ctx.arc(px,py,3,0,7); ctx.fill(); } }
+    ctx.strokeStyle='#3a2410'; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(SLING.x-12,SLING.y); ctx.lineTo(state.bird.x,state.bird.y); ctx.lineTo(SLING.x+12,SLING.y); ctx.stroke(); }
+  for(const b of state.boxes) drawBox(b,THEMES[state.theme]);
+  for(const p of state.pigs) drawPig(p,THEMES[state.theme]);
+  for(const pt of state.particles){ ctx.fillStyle=pt.c; ctx.globalAlpha=clamp(pt.life*2,0,1); const s=pt.sz||4;
+    if(pt.fluff){ ctx.beginPath(); ctx.arc(pt.x,pt.y,s/2,0,7); ctx.fill(); } else ctx.fillRect(pt.x-s/2,pt.y-s/2,s,s); ctx.globalAlpha=1; }
+  ctx.fillStyle='#fff'; ctx.font='bold 18px system-ui'; ctx.textAlign='center';
+  for(const f of state.floats){ ctx.globalAlpha=clamp(f.life,0,1); ctx.fillText(f.txt,f.x,f.y); } ctx.globalAlpha=1; ctx.textAlign='start';
+  if(state.bird&&!state.bird.launched){ const bb=state.bird; if(!state.aiming){bb.x=SLING.x;bb.y=SLING.y;} drawBird(bb); }
+  if(state.bird&&state.bird.alive&&state.bird.launched) drawBird(state.bird);
+  state.extra.forEach(e=>e.alive&&drawBird(e)); }
+
+/* ============================ Loop ============================ */
+let last=0, acc=0;
+function loop(ts){ const t=ts/1000, dt=Math.min(0.033,(t-last)||0); last=t;
+  if(state&&state.phase!=='won'&&state.phase!=='lost'){ acc+=dt; const fixed=1/120; let n=0;
+    while(acc>=fixed&&n++<8){ step(fixed); acc-=fixed; } }
+  render(t,dt); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+/* ============================ Menus ============================ */
+function buildMenu(){ const list=$('#themeList'); list.innerHTML='';
+  THEME_NAMES.forEach(name=>{ const T=THEMES[name]; const card=document.createElement('div');
+    card.className='theme-card'; card.style.background=`linear-gradient(${T.sky[0]},${T.sky[1]})`;
+    card.innerHTML=`${T.label}<small>${T.tag}</small>`; card.onclick=()=>openLevels(name); list.appendChild(card); }); }
+function openLevels(theme){ state=null; Snd.stopAmbient(); Snd.stopMusic();   /* no audio in menus */
+  $('#hud').classList.add('hidden'); $('#endCard').classList.remove('show');
+  $('#menu').classList.add('hidden'); $('#levelSelect').classList.remove('hidden'); $('#themeTitle').textContent=THEMES[theme].label;
+  const grid=$('#levelGrid'); grid.innerHTML=''; const prog=loadProgress()[theme]||{};
+  for(let i=0;i<20;i++){ const el=document.createElement('div'); el.className='lvl'; const stars=prog[i]||0;
+    el.innerHTML=`<div>${i+1}</div><div class="stars">${'★'.repeat(stars)}${'☆'.repeat(3-stars)}</div>`;
+    el.onclick=()=>startLevel(theme,i); grid.appendChild(el); } }
+$('#toMenuBtn').onclick=()=>{ state=null; Snd.stopAmbient(); Snd.stopMusic(); $('#levelSelect').classList.add('hidden'); $('#menu').classList.remove('hidden'); };
+$('#backBtn').onclick=()=>{ if(state) openLevels(state.theme); };
+
+/* sound toggle (menu = pure setting, no sound plays here) */
+function refreshSoundUI(){ const i=Snd.enabled?'🔊':'🔇'; $('#soundBtn').textContent=i; $('#menuSound').textContent=`${i} Sound: ${Snd.enabled?'on':'off'}`; }
+$('#soundBtn').onclick=()=>{ Snd.init(); Snd.setEnabled(!Snd.enabled); refreshSoundUI();
+  if(state){ if(Snd.enabled){ Snd.startMusic(state.theme); Snd.startAmbient(state.theme); } else { Snd.stopMusic(); Snd.stopAmbient(); } } };
+$('#menuSound').onclick=()=>{ Snd.init(); Snd.setEnabled(!Snd.enabled); refreshSoundUI(); };  /* silent in menu */
+
+initMenuScene(); addEventListener('resize', initMenuScene); buildMenu(); refreshSoundUI();
+</script>
+</body>
+</html>
