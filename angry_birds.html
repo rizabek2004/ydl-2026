@@ -146,6 +146,7 @@ const Snd = {
 
   /* soft in-game music per theme */
   MELODIES:{
+    Menu:[[523,.32],[659,.32],[784,.36],[659,.3],[587,.32],[523,.4],[392,.42],[0,.34]],
     Atyrau:[[392,.45],[440,.45],[523,.45],[440,.45],[349,.55],[392,.55],[0,.4]],
     Almaty:[[523,.4],[587,.4],[523,.4],[440,.5],[392,.5],[440,.65],[0,.4]],
     Aktau:[[587,.34],[698,.34],[784,.34],[698,.34],[659,.5],[523,.6],[0,.4]],
@@ -164,6 +165,9 @@ const Snd = {
   /* Per-theme natural soundscapes. Each has its OWN base bed (wind/waves/rustle) + its own
      "critter" voice. base raised so it is clearly audible; swell LFO gives life. */
   AMB:{
+    // Menu: open-sky breeze + cheerful birdsong, matching the animated title scene
+    Menu:{ filter:'bandpass', freq:520, q:0.5, base:0.1, swell:0.1, rate:1.5,
+      critter(S){ const t=S.ctx.currentTime, f=1500+Math.random()*900; S.tone(f,t,0.12,'sine',0.06); S.tone(f*1.25,t+0.09,0.1,'sine',0.05); } },
     // Atyrau desert: dry low wind + sparse distant insect/bird warble
     Atyrau:{ filter:'bandpass', freq:300, q:0.4, base:0.14, swell:0.07, rate:2.8,
       critter(S){ const t=S.ctx.currentTime, f=520+Math.random()*260; S.tone(f,t,0.22,'triangle',0.05); S.tone(f*0.75,t+0.18,0.18,'triangle',0.04); } },
@@ -405,6 +409,12 @@ const SLING={ x:170, y:0 }; let state=null;
 /* Issue 4 fix: gentler gravity + softer launch = slower, floatier, more readable arcs.
    LAUNCH_POWER and MAX_PULL are named so the launch, aim clamp and preview all stay in sync. */
 const G=800, DRAG=0.999, LAUNCH_POWER=9.5, MAX_PULL=108;
+/* Impact tuning: pigs are hurt both by hard landings (falling from height / slammed into blocks)
+   and by direct bird strikes. Damage is proportional to impact speed — and to the bird's momentum
+   (mass × speed) for strikes — so a heavy Qara bomb hits far harder than a light Kok. */
+const FALL_THR=210, FALL_K=0.16;             // fall/landing damage: kicks in above ~28px of drop
+const BIRD_HIT_THR=80, BIRD_HIT_K=0.16;      // direct-hit damage threshold + scale
+const BIRD_MASS={ red:1, blue:0.6, yellow:0.85, black:1.8 };  // per-bird momentum factor
 
 function startLevel(theme, idx){
   const lvl=genLevel(theme,idx); SLING.y=GROUND-90;
@@ -438,7 +448,12 @@ function onDown(e){ Snd.init(); Snd.resume(); if(!state||!state.bird)return; con
   if(Math.hypot(p.x-state.bird.x,p.y-state.bird.y)<70){ state.aiming=true; e.preventDefault(); } }
 function onMove(e){ if(!state||!state.aiming)return; const p=pointer(e); e.preventDefault();
   const dx=p.x-SLING.x, dy=p.y-SLING.y, d=Math.min(MAX_PULL,Math.hypot(dx,dy)), a=Math.atan2(dy,dx);
-  state.bird.x=SLING.x+Math.cos(a)*d; state.bird.y=SLING.y+Math.sin(a)*d; }
+  state.bird.x=SLING.x+Math.cos(a)*d;
+  // High-angle fix: a steep pull drags the bird DOWN, and MAX_PULL(108) exceeds the slingshot's
+  // ground clearance (GROUND-SLING.y=90). Left unclamped the bird starts below GROUND, so the first
+  // physics step's world-collision snaps it up and flips its upward launch velocity (×-0.35) into a
+  // downward bounce — the bird "falls" instead of launching. Keep it above ground so steep shots fly.
+  state.bird.y=Math.min(SLING.y+Math.sin(a)*d, GROUND-state.bird.r); }
 function onUp(){ if(!state||!state.aiming)return; state.aiming=false;
   const b=state.bird; const dx=SLING.x-b.x, dy=SLING.y-b.y, pull=Math.hypot(dx,dy);
   // Issue 1: ignore micro-pulls (snap the bird back, don't waste it) and guarantee a real flight speed
@@ -476,8 +491,12 @@ function step(dt){
     else state.calmT=0; }
   for(const b of movers) for(const bx of state.boxes) collideCircleBox(b,bx,true);
   for(const p of state.pigs) for(const bx of state.boxes) collideCircleBox(p,bx,false);
-  for(const b of movers) for(const p of state.pigs){ const d=Math.hypot(b.x-p.x,b.y-p.y);
-    if(d<b.r+p.r){ const imp=Math.hypot(b.vx,b.vy); p.hp-=imp*0.06; p.vx+=b.vx*0.4; p.vy+=b.vy*0.4-40; b.vx*=0.5; b.vy*=0.5; if(imp>120)Snd.thud(0.2); } }
+  for(const b of movers) for(const p of state.pigs){ const dx=p.x-b.x, dy=p.y-b.y, d=Math.hypot(dx,dy)||0.01;
+    if(d<b.r+p.r){ const nx=dx/d, ny=dy/d, approach=b.vx*nx+b.vy*ny;          // bird's speed toward the pig
+      if(approach>0){                                                          // a real strike — not a graze on the way out
+        const dmg=Math.max(0,approach-BIRD_HIT_THR)*BIRD_HIT_K*(BIRD_MASS[b.type]||1);
+        p.hp-=dmg; p.vx+=b.vx*0.4; p.vy+=b.vy*0.4-40; if(approach>140)Snd.thud(0.25); }
+      const ov=b.r+p.r-d; b.x-=nx*ov; b.y-=ny*ov; b.vx*=0.45; b.vy*=0.45; } }  // separate + bleed momentum so one contact = one hit
   // remove dead boxes/pigs + score
   state.boxes=state.boxes.filter(b=>{ if(b.hp<=0){ shatter(b); addScore(MAT[b.mat].value, b.x+b.w/2, b.y); Snd.breakSound(b.mat); wake(); return false; } return true; });
   state.pigs=state.pigs.filter(p=>{ if(p.hp<=0){ burst(p.x,p.y,THEMES[state.theme].pig); addScore(PIGS[p.type].score, p.x, p.y-p.r); Snd.pop(); return false; } return true; });
@@ -514,7 +533,9 @@ function presettle(){ const dt=1/120;
 }
 function shatter(b){ const m=MAT[b.mat]; for(let i=0;i<m.shards;i++)
   state.particles.push({x:b.x+Math.random()*b.w,y:b.y+Math.random()*b.h,vx:Math.random()*260-130,vy:Math.random()*-200-30,life:.5,c:m.color}); }
-function collideCircleWorld(b,isBird){ if(b.y+b.r>GROUND){ b.y=GROUND-b.r; b.vy*=-0.35; b.vx*=0.7; if(isBird&&Math.abs(b.vy)<60)b.vy=0; }
+function collideCircleWorld(b,isBird){ if(b.y+b.r>GROUND){ const vimp=Math.abs(b.vy);
+    b.y=GROUND-b.r; b.vy*=-0.35; b.vx*=0.7; if(isBird&&Math.abs(b.vy)<60)b.vy=0;
+    if(!isBird && vimp>FALL_THR) b.hp-=(vimp-FALL_THR)*FALL_K; }   // pigs take fall damage on hard landings
   if(b.x-b.r<0){b.x=b.r;b.vx*=-0.4;} if(b.x+b.r>W){b.x=W-b.r;b.vx*=-0.4;} }
 /* mass-weighted box-box resolution -> heavy rock barely moves, light glass gets shoved */
 function resolveBoxBox(a,b){
@@ -535,6 +556,7 @@ function collideCircleBox(c,b,isBird){
   // material-aware damage: subtract threshold, scale by k; glass low thr -> easy break
   const dmg=Math.max(0,speed-m.thr)*m.k*(isBird?1.6:1);
   if(dmg>0){ b.hp-=dmg; b.vx+=c.vx*0.25/b.mass; b.vy+=c.vy*0.25/b.mass; b.vrot+=(c.vx*uy-c.vy*ux)*0.002; if(isBird&&speed>200)Snd.thud(0.22); }
+  if(!isBird && speed>FALL_THR) c.hp-=(speed-FALL_THR)*FALL_K*0.5;   // a pig flung/dropped into blocks gets hurt too
   const dot=c.vx*ux+c.vy*uy; c.vx-=1.4*dot*ux; c.vy-=1.4*dot*uy; c.vx*=0.6; c.vy*=0.6; }
 /* Issue 3+4: land by LOW SPEED ALONE (not ground contact, so birds resting on blocks settle too),
    plus an 8s flight timeout; then linger briefly and vanish in a puff of feathers. */
@@ -600,6 +622,14 @@ function drawPig(p,T){ ctx.save(); ctx.translate(p.x,p.y); const r=p.r, d=PIGS[p
   ctx.fillStyle='#3f7a26'; ctx.beginPath(); ctx.arc(-r*0.12,r*0.3,r*0.07,0,7); ctx.arc(r*0.12,r*0.3,r*0.07,0,7); ctx.fill();
   ctx.fillStyle=T.pig; ctx.beginPath(); ctx.moveTo(-r*0.9,-r*0.6); ctx.lineTo(-r*0.5,-r*0.95); ctx.lineTo(-r*0.4,-r*0.6); ctx.fill();
   ctx.beginPath(); ctx.moveTo(r*0.9,-r*0.6); ctx.lineTo(r*0.5,-r*0.95); ctx.lineTo(r*0.4,-r*0.6); ctx.fill();
+  // wounds: scratches accumulate as hp drops, so the player can read how close a pig is to popping
+  const hpr=clamp(p.hp/(p.maxhp||p.hp),0,1);
+  if(hpr<0.92){ ctx.strokeStyle='#8a1f1f'; ctx.lineWidth=Math.max(1.4,r*0.13); ctx.lineCap='round';
+    const cuts=hpr>0.66?1:hpr>0.34?2:3, spots=[[-r*0.45,r*0.12],[r*0.5,-r*0.05],[-r*0.05,r*0.55]];
+    for(let i=0;i<cuts;i++){ const sx=spots[i][0], sy=spots[i][1], s=r*0.16;
+      ctx.beginPath(); ctx.moveTo(sx-s,sy-s); ctx.lineTo(sx+s,sy+s); ctx.moveTo(sx+s,sy-s); ctx.lineTo(sx-s,sy+s); ctx.stroke(); }
+    if(hpr<0.34){ ctx.fillStyle='#e0555566'; ctx.beginPath(); ctx.arc(-r*0.55,r*0.12,r*0.2,0,7); ctx.arc(r*0.55,r*0.12,r*0.2,0,7); ctx.fill();
+      ctx.strokeStyle='#5a1010'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(-r*0.28,r*0.7); ctx.quadraticCurveTo(0,r*0.52,r*0.28,r*0.7); ctx.stroke(); } }  // flushed + worried near death
   if(d.crown){ ctx.fillStyle='#ffcf33'; ctx.beginPath(); ctx.moveTo(-r*0.7,-r*0.8); ctx.lineTo(-r*0.7,-r*1.25); ctx.lineTo(-r*0.35,-r*0.95);
     ctx.lineTo(0,-r*1.35); ctx.lineTo(r*0.35,-r*0.95); ctx.lineTo(r*0.7,-r*1.25); ctx.lineTo(r*0.7,-r*0.8); ctx.fill();
     ctx.fillStyle='#e53b3b'; ctx.beginPath(); ctx.arc(0,-r*1.05,r*0.1,0,7); ctx.fill(); }
@@ -730,14 +760,22 @@ function openLevels(theme){ state=null; Snd.stopAmbient(); Snd.stopMusic();   /*
   for(let i=0;i<20;i++){ const el=document.createElement('div'); el.className='lvl'; const stars=prog[i]||0;
     el.innerHTML=`<div>${i+1}</div><div class="stars">${'★'.repeat(stars)}${'☆'.repeat(3-stars)}</div>`;
     el.onclick=()=>startLevel(theme,i); grid.appendChild(el); } }
-$('#toMenuBtn').onclick=()=>{ state=null; Snd.stopAmbient(); Snd.stopMusic(); $('#levelSelect').classList.add('hidden'); $('#menu').classList.remove('hidden'); };
+$('#toMenuBtn').onclick=()=>{ state=null; $('#levelSelect').classList.add('hidden'); $('#menu').classList.remove('hidden'); startMenuAudio(); };
 $('#backBtn').onclick=()=>{ if(state) openLevels(state.theme); };
 
-/* sound toggle (menu = pure setting, no sound plays here) */
+/* sound toggle + menu soundtrack */
 function refreshSoundUI(){ const i=Snd.enabled?'🔊':'🔇'; $('#soundBtn').textContent=i; $('#menuSound').textContent=`${i} Sound: ${Snd.enabled?'on':'off'}`; }
+// menu (theme-picker) plays its own gentle music + ambient when sound is on
+function startMenuAudio(){ if(state||!Snd.enabled)return; Snd.startMusic('Menu'); Snd.startAmbient('Menu'); }
+function stopMenuAudio(){ Snd.stopMusic(); Snd.stopAmbient(); }
 $('#soundBtn').onclick=()=>{ Snd.init(); Snd.setEnabled(!Snd.enabled); refreshSoundUI();
   if(state){ if(Snd.enabled){ Snd.startMusic(state.theme); Snd.startAmbient(state.theme); } else { Snd.stopMusic(); Snd.stopAmbient(); } } };
-$('#menuSound').onclick=()=>{ Snd.init(); Snd.setEnabled(!Snd.enabled); refreshSoundUI(); };  /* silent in menu */
+$('#menuSound').onclick=()=>{ Snd.init(); Snd.setEnabled(!Snd.enabled); refreshSoundUI();
+  if(Snd.enabled) startMenuAudio(); else stopMenuAudio(); };
+// browsers block audio until a user gesture — kick the menu soundtrack off on the first interaction
+function kickMenuAudio(){ removeEventListener('pointerdown',kickMenuAudio); removeEventListener('keydown',kickMenuAudio);
+  Snd.init(); Snd.resume(); startMenuAudio(); }
+addEventListener('pointerdown',kickMenuAudio); addEventListener('keydown',kickMenuAudio);
 
 initMenuScene(); addEventListener('resize', initMenuScene); buildMenu(); refreshSoundUI();
 </script>
