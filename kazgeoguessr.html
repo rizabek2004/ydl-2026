@@ -60,6 +60,10 @@
     <p class="sub">This game needs a Google Maps JavaScript API key (with <b>Maps JavaScript API</b> enabled).
       It is stored only in your browser.
       <a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank">Get a key →</a></p>
+    <p class="sub" style="font-size:.85rem;">⚠️ The map shows a <i>“For development purposes only”</i> watermark (and a greyed-out map)
+      until you <a href="https://console.cloud.google.com/project/_/billing/enable" target="_blank">enable billing</a>
+      on your Google Cloud project — Google requires it even for free-tier usage. This is a Google account
+      setting, not a bug in the game.</p>
     <input id="apiKeyInput" placeholder="Paste your Google Maps API key" />
     <div id="bestLine" class="sub"></div>
     <button id="startBtn">Start game</button>
@@ -278,7 +282,7 @@ function showResult(km, score) {
   setTimeout(() => {
     if (!resultMap) {
       resultMap = new google.maps.Map($('resultMap'),
-        { center: currentTarget, zoom: 5, streetViewControl: false });
+        { center: currentTarget, zoom: 5, streetViewControl: false, colorScheme: 'LIGHT' });
     }
     if (actualMarker) actualMarker.setMap(null);
     if (resultLine) resultLine.setMap(null);
@@ -328,6 +332,9 @@ async function init(key) {
   map = new google.maps.Map($('gmap'), {
     center: KZ_CENTER, zoom: 4, disableDefaultUI: true, zoomControl: true,
     clickableIcons: false, streetViewControl: false,
+    // Force true (light) colors: newer Maps JS defaults to following the OS theme, which renders
+    // the map dark/"inverted" on machines in dark mode. Pin it to LIGHT so colors are real.
+    colorScheme: 'LIGHT',
   });
   map.addListener('click', onMapClick);
 }
