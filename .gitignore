@@ -1,0 +1,13 @@
+# Secrets
+.env
+creds.txt
+
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Generated output
+day_1/output.png
