@@ -1,0 +1,7 @@
+# Streamlit theme — matched to yessenovfoundation.org brand colors.
+[theme]
+primaryColor = "#d700a5"            # foundation magenta (accents, buttons, focus)
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7eef7"  # light purple tint (sidebar, bubbles)
+textColor = "#3a2140"
+font = "sans serif"

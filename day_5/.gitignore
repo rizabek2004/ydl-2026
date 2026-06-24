@@ -1,0 +1,13 @@
+# Secrets — never commit (CLAUDE.md + requirements.md security rule)
+specs/creds.txt
+.env
+
+# Virtualenv
+.venv/
+
+# Scraped data cache (regenerate with scrape.py)
+data/
+
+# Python
+__pycache__/
+*.pyc

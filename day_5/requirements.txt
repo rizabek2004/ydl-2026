@@ -1,0 +1,7 @@
+# Day 5 — AI Grants Assistant (Yessenov Foundation)
+streamlit
+requests
+beautifulsoup4
+pypdf
+numpy
+mailersend
