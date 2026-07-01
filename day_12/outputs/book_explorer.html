@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Constellation — Embedding Recommender</title>
+<style>
+  :root{
+    --bg0:#070a14; --bg1:#0d1326; --ink:#e8ecf8; --dim:#8893b5;
+    --line:#3de0ff; --panel:rgba(14,20,40,.82); --edge:#1c2746;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:radial-gradient(1200px 800px at 70% -10%,#15203f 0%,var(--bg1) 45%,var(--bg0) 100%);overflow:hidden}
+  #app{position:fixed;inset:0;display:flex;flex-direction:column}
+
+  header{display:flex;align-items:center;gap:18px;padding:14px 20px;flex-wrap:wrap;z-index:5}
+  header h1{font-size:18px;font-weight:650;margin:0;letter-spacing:.3px}
+  header h1 small{display:block;font-size:11px;font-weight:400;color:var(--dim);letter-spacing:.2px;margin-top:2px}
+  .spacer{flex:1}
+
+  .seg{display:inline-flex;background:rgba(255,255,255,.05);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+  .seg button{appearance:none;border:0;background:transparent;color:var(--dim);padding:7px 13px;font-size:12.5px;cursor:pointer;transition:.15s}
+  .seg button.on{background:#26356a;color:#fff;text-shadow:0 0 12px rgba(61,224,255,.6)}
+  .seg button:hover{color:#fff}
+  .lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:1.4px;color:var(--dim);margin-right:-8px}
+
+  input#search{background:rgba(255,255,255,.05);border:1px solid var(--edge);border-radius:10px;color:var(--ink);
+    padding:8px 12px;font-size:12.5px;width:200px;outline:none}
+  input#search:focus{border-color:var(--line);box-shadow:0 0 0 2px rgba(61,224,255,.15)}
+
+  main{flex:1;position:relative}
+  svg{width:100%;height:100%;display:block}
+
+  .legend{position:absolute;left:18px;bottom:16px;display:flex;flex-direction:column;gap:6px;z-index:4}
+  .legend .chip{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink);cursor:pointer;user-select:none;opacity:1;transition:.15s}
+  .legend .chip.off{opacity:.32}
+  .legend .dot{width:11px;height:11px;border-radius:50%;box-shadow:0 0 10px currentColor}
+
+  /* right detail panel */
+  aside{position:absolute;top:14px;right:14px;width:300px;max-height:calc(100% - 28px);overflow:auto;
+    background:var(--panel);backdrop-filter:blur(9px);border:1px solid var(--edge);border-radius:16px;padding:16px 16px 18px;
+    transform:translateX(360px);opacity:0;transition:.28s cubic-bezier(.2,.7,.2,1);z-index:6}
+  aside.show{transform:none;opacity:1}
+  aside .x{position:absolute;top:10px;right:12px;color:var(--dim);cursor:pointer;font-size:18px;line-height:1}
+  aside h2{margin:0 26px 2px 0;font-size:16px;line-height:1.25}
+  aside .by{color:var(--dim);font-size:12px;margin-bottom:10px}
+  aside .gtag{display:inline-block;font-size:11px;padding:3px 9px;border-radius:999px;margin-bottom:12px;font-weight:600}
+  .purity{font-size:12px;color:var(--dim);margin:2px 0 12px}
+  .purity b{color:var(--ink)}
+  .reclist{display:flex;flex-direction:column;gap:7px}
+  .rec{cursor:pointer;border:1px solid var(--edge);border-radius:10px;padding:8px 10px;transition:.15s;background:rgba(255,255,255,.02)}
+  .rec:hover{border-color:var(--line);background:rgba(61,224,255,.06)}
+  .rec .t{font-size:12.5px;display:flex;justify-content:space-between;gap:8px}
+  .rec .t .s{color:var(--dim);font-variant-numeric:tabular-nums}
+  .rec .meta{font-size:11px;color:var(--dim);margin-top:2px;display:flex;align-items:center;gap:6px}
+  .rec .bar{height:4px;border-radius:3px;margin-top:7px;background:rgba(255,255,255,.08);overflow:hidden}
+  .rec .bar i{display:block;height:100%;border-radius:3px}
+  .same{color:#7CF9B0}
+
+  .hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);font-size:11.5px;color:var(--dim);
+    background:rgba(8,12,24,.5);padding:6px 12px;border-radius:999px;border:1px solid var(--edge);z-index:3;pointer-events:none}
+
+  /* svg element styling */
+  .node{cursor:pointer}
+  .node circle{transition:r .15s, opacity .2s}
+  .node text{font-size:9px;fill:var(--dim);pointer-events:none;transition:opacity .2s}
+  .node.faded{opacity:.12}
+  .node.lit text{fill:var(--ink)}
+  .edge{stroke:var(--line);fill:none;opacity:.0;transition:opacity .25s;filter:url(#glow)}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>📚 Library Constellation<small>books mapped by their embeddings — hover to trace recommendations</small></h1>
+    <div class="spacer"></div>
+    <span class="lbl">Model</span>
+    <div class="seg" id="seg-model">
+      <button data-v="w2v" class="on">Word2Vec</button>
+      <button data-v="glove">GloVe</button>
+    </div>
+    <span class="lbl">Projection</span>
+    <div class="seg" id="seg-proj">
+      <button data-v="pca" class="on">PCA</button>
+      <button data-v="tsne">t-SNE</button>
+    </div>
+    <input id="search" placeholder="search a title…" autocomplete="off">
+  </header>
+  <main>
+    <svg id="stage" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="2.2" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <g id="edges"></g>
+      <g id="nodes"></g>
+    </svg>
+    <div class="legend" id="legend"></div>
+    <div class="hint" id="hint">hover a star to preview · click to pin & see its recommendations</div>
+    <aside id="panel">
+      <span class="x" id="closePanel">✕</span>
+      <h2 id="p-title"></h2>
+      <div class="by" id="p-by"></div>
+      <span class="gtag" id="p-genre"></span>
+      <div class="purity" id="p-purity"></div>
+      <div class="reclist" id="p-recs"></div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const DATA = {"genres": ["Detective & Mystery", "Science Fiction", "Gothic & Horror", "Romance"], "books": [{"title": "The Adventures of Sherlock Holmes", "short": "The Adventures of Sherlo", "author": "Doyle", "genre": "Detective & Mystery", "coords": {"w2v-pca": [3.722, 2.36], "w2v-tsne": [4.703, 3.635], "glove-pca": [3.859, 1.084], "glove-tsne": [5.192, 3.575]}, "recs": {"w2v": [{"i": 2, "score": 0.724, "norm": 1.0}, {"i": 4, "score": 0.689, "norm": 0.509}, {"i": 3, "score": 0.686, "norm": 0.463}, {"i": 1, "score": 0.68, "norm": 0.379}, {"i": 6, "score": 0.654, "norm": 0.0}], "glove": [{"i": 3, "score": 0.883, "norm": 1.0}, {"i": 2, "score": 0.804, "norm": 0.684}, {"i": 4, "score": 0.795, "norm": 0.646}, {"i": 1, "score": 0.76, "norm": 0.507}, {"i": 18, "score": 0.633, "norm": 0.0}]}}, {"title": "The Moonstone", "short": "The Moonstone", "author": "Collins", "genre": "Detective & Mystery", "coords": {"w2v-pca": [2.29, 0.559], "w2v-tsne": [4.788, 3.731], "glove-pca": [2.828, 0.907], "glove-tsne": [5.707, 3.278]}, "recs": {"w2v": [{"i": 4, "score": 0.887, "norm": 1.0}, {"i": 2, "score": 0.781, "norm": 0.529}, {"i": 3, "score": 0.759, "norm": 0.43}, {"i": 0, "score": 0.68, "norm": 0.08}, {"i": 6, "score": 0.662, "norm": 0.0}], "glove": [{"i": 4, "score": 0.879, "norm": 1.0}, {"i": 2, "score": 0.837, "norm": 0.822}, {"i": 3, "score": 0.766, "norm": 0.517}, {"i": 0, "score": 0.76, "norm": 0.492}, {"i": 18, "score": 0.645, "norm": 0.0}]}}, {"title": "The Mysterious Affair at Styles", "short": "The Mysterious Affair at", "author": "Christie", "genre": "Detective & Mystery", "coords": {"w2v-pca": [2.662, 1.336], "w2v-tsne": [4.947, 3.615], "glove-pca": [3.282, 0.705], "glove-tsne": [5.252, 3.441]}, "recs": {"w2v": [{"i": 4, "score": 0.801, "norm": 1.0}, {"i": 1, "score": 0.781, "norm": 0.844}, {"i": 3, "score": 0.74, "norm": 0.527}, {"i": 0, "score": 0.724, "norm": 0.404}, {"i": 6, "score": 0.671, "norm": 0.0}], "glove": [{"i": 4, "score": 0.861, "norm": 1.0}, {"i": 1, "score": 0.837, "norm": 0.892}, {"i": 3, "score": 0.829, "norm": 0.855}, {"i": 0, "score": 0.804, "norm": 0.739}, {"i": 18, "score": 0.645, "norm": 0.0}]}}, {"title": "The innocence of Father Brown", "short": "The innocence of Father ", "author": "Chesterton", "genre": "Detective & Mystery", "coords": {"w2v-pca": [3.301, 0.244], "w2v-tsne": [5.243, 3.355], "glove-pca": [3.813, 0.797], "glove-tsne": [5.38, 3.476]}, "recs": {"w2v": [{"i": 4, "score": 0.784, "norm": 1.0}, {"i": 1, "score": 0.759, "norm": 0.796}, {"i": 2, "score": 0.74, "norm": 0.641}, {"i": 0, "score": 0.686, "norm": 0.203}, {"i": 16, "score": 0.661, "norm": 0.0}], "glove": [{"i": 0, "score": 0.883, "norm": 1.0}, {"i": 2, "score": 0.829, "norm": 0.781}, {"i": 4, "score": 0.795, "norm": 0.642}, {"i": 1, "score": 0.766, "norm": 0.522}, {"i": 18, "score": 0.638, "norm": 0.0}]}}, {"title": "The Leavenworth Case", "short": "The Leavenworth Case", "author": "Green", "genre": "Detective & Mystery", "coords": {"w2v-pca": [2.557, 0.632], "w2v-tsne": [4.825, 3.411], "glove-pca": [3.103, 1.045], "glove-tsne": [4.983, 3.763]}, "recs": {"w2v": [{"i": 1, "score": 0.887, "norm": 1.0}, {"i": 2, "score": 0.801, "norm": 0.624}, {"i": 3, "score": 0.784, "norm": 0.548}, {"i": 0, "score": 0.689, "norm": 0.133}, {"i": 6, "score": 0.659, "norm": 0.0}], "glove": [{"i": 1, "score": 0.879, "norm": 1.0}, {"i": 2, "score": 0.861, "norm": 0.924}, {"i": 3, "score": 0.795, "norm": 0.65}, {"i": 0, "score": 0.795, "norm": 0.647}, {"i": 18, "score": 0.641, "norm": 0.0}]}}, {"title": "The war of the worlds", "short": "The war of the worlds", "author": "Wells", "genre": "Science Fiction", "coords": {"w2v-pca": [-0.801, 2.889], "w2v-tsne": [-3.714, 5.561], "glove-pca": [-1.644, 3.335], "glove-tsne": [-3.641, 5.576]}, "recs": {"w2v": [{"i": 8, "score": 0.892, "norm": 1.0}, {"i": 9, "score": 0.748, "norm": 0.429}, {"i": 6, "score": 0.728, "norm": 0.35}, {"i": 7, "score": 0.702, "norm": 0.247}, {"i": 2, "score": 0.64, "norm": 0.0}], "glove": [{"i": 9, "score": 0.941, "norm": 1.0}, {"i": 8, "score": 0.806, "norm": 0.575}, {"i": 7, "score": 0.721, "norm": 0.303}, {"i": 6, "score": 0.719, "norm": 0.297}, {"i": 14, "score": 0.625, "norm": 0.0}]}}, {"title": "Twenty Thousand Leagues under the Sea", "short": "Twenty Thousand Leagues ", "author": "Verne", "genre": "Science Fiction", "coords": {"w2v-pca": [0.614, 2.841], "w2v-tsne": [-3.04, 4.954], "glove-pca": [-0.503, 2.284], "glove-tsne": [-3.696, 5.082]}, "recs": {"w2v": [{"i": 5, "score": 0.728, "norm": 1.0}, {"i": 8, "score": 0.711, "norm": 0.746}, {"i": 9, "score": 0.676, "norm": 0.212}, {"i": 2, "score": 0.671, "norm": 0.14}, {"i": 1, "score": 0.662, "norm": 0.0}], "glove": [{"i": 7, "score": 0.8, "norm": 1.0}, {"i": 8, "score": 0.751, "norm": 0.689}, {"i": 9, "score": 0.724, "norm": 0.515}, {"i": 5, "score": 0.719, "norm": 0.481}, {"i": 1, "score": 0.643, "norm": 0.0}]}}, {"title": "A princess of Mars", "short": "A princess of Mars", "author": "Burroughs", "genre": "Science Fiction", "coords": {"w2v-pca": [-2.323, 3.903], "w2v-tsne": [-3.243, 5.188], "glove-pca": [-0.178, 2.93], "glove-tsne": [-3.578, 5.783]}, "recs": {"w2v": [{"i": 8, "score": 0.717, "norm": 1.0}, {"i": 5, "score": 0.702, "norm": 0.848}, {"i": 9, "score": 0.698, "norm": 0.809}, {"i": 6, "score": 0.654, "norm": 0.351}, {"i": 12, "score": 0.621, "norm": 0.0}], "glove": [{"i": 6, "score": 0.8, "norm": 1.0}, {"i": 8, "score": 0.778, "norm": 0.865}, {"i": 9, "score": 0.727, "norm": 0.54}, {"i": 5, "score": 0.721, "norm": 0.496}, {"i": 1, "score": 0.643, "norm": 0.0}]}}, {"title": "Flatland: A Romance of Many Dimensions", "short": "Flatland", "author": "Abbott", "genre": "Science Fiction", "coords": {"w2v-pca": [-1.047, 2.968], "w2v-tsne": [-3.597, 5.004], "glove-pca": [-0.967, 3.325], "glove-tsne": [-3.887, 5.174]}, "recs": {"w2v": [{"i": 5, "score": 0.892, "norm": 1.0}, {"i": 9, "score": 0.758, "norm": 0.48}, {"i": 7, "score": 0.717, "norm": 0.317}, {"i": 6, "score": 0.711, "norm": 0.297}, {"i": 2, "score": 0.635, "norm": 0.0}], "glove": [{"i": 9, "score": 0.823, "norm": 1.0}, {"i": 5, "score": 0.806, "norm": 0.916}, {"i": 7, "score": 0.778, "norm": 0.773}, {"i": 6, "score": 0.751, "norm": 0.631}, {"i": 1, "score": 0.628, "norm": 0.0}]}}, {"title": "The Coming Race", "short": "The Coming Race", "author": "Lytton", "genre": "Science Fiction", "coords": {"w2v-pca": [-1.681, 2.114], "w2v-tsne": [-3.11, 4.775], "glove-pca": [-1.544, 3.328], "glove-tsne": [-3.745, 5.39]}, "recs": {"w2v": [{"i": 8, "score": 0.758, "norm": 1.0}, {"i": 5, "score": 0.748, "norm": 0.908}, {"i": 7, "score": 0.698, "norm": 0.47}, {"i": 6, "score": 0.676, "norm": 0.275}, {"i": 10, "score": 0.645, "norm": 0.0}], "glove": [{"i": 5, "score": 0.941, "norm": 1.0}, {"i": 8, "score": 0.823, "norm": 0.627}, {"i": 7, "score": 0.727, "norm": 0.326}, {"i": 6, "score": 0.724, "norm": 0.314}, {"i": 14, "score": 0.624, "norm": 0.0}]}}, {"title": "Dracula", "short": "Dracula", "author": "Stoker", "genre": "Gothic & Horror", "coords": {"w2v-pca": [-3.064, -1.129], "w2v-tsne": [-4.907, -3.413], "glove-pca": [-2.53, -1.457], "glove-tsne": [-5.258, -3.647]}, "recs": {"w2v": [{"i": 14, "score": 0.906, "norm": 1.0}, {"i": 12, "score": 0.837, "norm": 0.735}, {"i": 13, "score": 0.83, "norm": 0.706}, {"i": 11, "score": 0.711, "norm": 0.254}, {"i": 9, "score": 0.645, "norm": 0.0}], "glove": [{"i": 12, "score": 0.853, "norm": 1.0}, {"i": 11, "score": 0.771, "norm": 0.603}, {"i": 13, "score": 0.762, "norm": 0.56}, {"i": 14, "score": 0.748, "norm": 0.491}, {"i": 16, "score": 0.647, "norm": 0.0}]}}, {"title": "Frankenstein; or, the modern prometheus", "short": "Frankenstein", "author": "Shelley", "genre": "Gothic & Horror", "coords": {"w2v-pca": [-4.118, -2.415], "w2v-tsne": [-4.63, -3.111], "glove-pca": [-3.402, -1.084], "glove-tsne": [-5.471, -3.896]}, "recs": {"w2v": [{"i": 12, "score": 0.722, "norm": 1.0}, {"i": 14, "score": 0.717, "norm": 0.952}, {"i": 13, "score": 0.714, "norm": 0.916}, {"i": 10, "score": 0.711, "norm": 0.895}, {"i": 9, "score": 0.62, "norm": 0.0}], "glove": [{"i": 13, "score": 0.933, "norm": 1.0}, {"i": 14, "score": 0.9, "norm": 0.893}, {"i": 12, "score": 0.819, "norm": 0.625}, {"i": 10, "score": 0.771, "norm": 0.465}, {"i": 16, "score": 0.63, "norm": 0.0}]}}, {"title": "The strange case of Dr. Jekyll and Mr. Hyde", "short": "The strange case of Dr. ", "author": "Stevenson", "genre": "Gothic & Horror", "coords": {"w2v-pca": [-3.551, -1.03], "w2v-tsne": [-5.249, -3.173], "glove-pca": [-2.951, -1.476], "glove-tsne": [-5.406, -3.642]}, "recs": {"w2v": [{"i": 10, "score": 0.837, "norm": 1.0}, {"i": 14, "score": 0.814, "norm": 0.878}, {"i": 13, "score": 0.768, "norm": 0.646}, {"i": 11, "score": 0.722, "norm": 0.41}, {"i": 9, "score": 0.642, "norm": 0.0}], "glove": [{"i": 10, "score": 0.853, "norm": 1.0}, {"i": 11, "score": 0.819, "norm": 0.844}, {"i": 13, "score": 0.811, "norm": 0.803}, {"i": 14, "score": 0.786, "norm": 0.69}, {"i": 16, "score": 0.639, "norm": 0.0}]}}, {"title": "The Picture of Dorian Gray", "short": "The Picture of Dorian Gr", "author": "Wilde", "genre": "Gothic & Horror", "coords": {"w2v-pca": [-2.736, -1.556], "w2v-tsne": [-5.227, -3.451], "glove-pca": [-3.51, -1.144], "glove-tsne": [-5.321, -3.659]}, "recs": {"w2v": [{"i": 14, "score": 0.869, "norm": 1.0}, {"i": 10, "score": 0.83, "norm": 0.827}, {"i": 12, "score": 0.768, "norm": 0.561}, {"i": 11, "score": 0.714, "norm": 0.323}, {"i": 9, "score": 0.639, "norm": 0.0}], "glove": [{"i": 11, "score": 0.933, "norm": 1.0}, {"i": 14, "score": 0.913, "norm": 0.934}, {"i": 12, "score": 0.811, "norm": 0.598}, {"i": 10, "score": 0.762, "norm": 0.438}, {"i": 16, "score": 0.629, "norm": 0.0}]}}, {"title": "Carmilla", "short": "Carmilla", "author": "Le Fanu", "genre": "Gothic & Horror", "coords": {"w2v-pca": [-2.991, -1.322], "w2v-tsne": [-5.115, -3.125], "glove-pca": [-3.607, -0.986], "glove-tsne": [-5.763, -3.63]}, "recs": {"w2v": [{"i": 10, "score": 0.906, "norm": 1.0}, {"i": 13, "score": 0.869, "norm": 0.86}, {"i": 12, "score": 0.814, "norm": 0.649}, {"i": 11, "score": 0.717, "norm": 0.285}, {"i": 9, "score": 0.642, "norm": 0.0}], "glove": [{"i": 13, "score": 0.913, "norm": 1.0}, {"i": 11, "score": 0.9, "norm": 0.957}, {"i": 12, "score": 0.786, "norm": 0.556}, {"i": 10, "score": 0.748, "norm": 0.42}, {"i": 6, "score": 0.628, "norm": 0.0}]}}, {"title": "Pride and Prejudice", "short": "Pride and Prejudice", "author": "Austen", "genre": "Romance", "coords": {"w2v-pca": [1.921, -2.389], "w2v-tsne": [3.619, -4.794], "glove-pca": [1.511, -3.711], "glove-tsne": [3.642, -5.356]}, "recs": {"w2v": [{"i": 16, "score": 0.918, "norm": 1.0}, {"i": 17, "score": 0.792, "norm": 0.515}, {"i": 18, "score": 0.702, "norm": 0.168}, {"i": 1, "score": 0.658, "norm": 0.0}, {"i": 3, "score": 0.658, "norm": 0.0}], "glove": [{"i": 16, "score": 0.748, "norm": 1.0}, {"i": 18, "score": 0.734, "norm": 0.89}, {"i": 17, "score": 0.729, "norm": 0.851}, {"i": 10, "score": 0.626, "norm": 0.014}, {"i": 2, "score": 0.625, "norm": 0.0}]}}, {"title": "Middlemarch", "short": "Middlemarch", "author": "Eliot", "genre": "Romance", "coords": {"w2v-pca": [2.085, -2.346], "w2v-tsne": [3.017, -5.004], "glove-pca": [0.512, -3.094], "glove-tsne": [3.592, -5.56]}, "recs": {"w2v": [{"i": 15, "score": 0.918, "norm": 1.0}, {"i": 17, "score": 0.793, "norm": 0.516}, {"i": 18, "score": 0.698, "norm": 0.146}, {"i": 3, "score": 0.661, "norm": 0.006}, {"i": 1, "score": 0.66, "norm": 0.0}], "glove": [{"i": 17, "score": 0.809, "norm": 1.0}, {"i": 15, "score": 0.748, "norm": 0.641}, {"i": 18, "score": 0.739, "norm": 0.588}, {"i": 10, "score": 0.647, "norm": 0.043}, {"i": 12, "score": 0.639, "norm": 0.0}]}}, {"title": "Tess of the d'Urbervilles: A Pure Woman", "short": "Tess of the d'Urberville", "author": "Hardy", "genre": "Romance", "coords": {"w2v-pca": [2.233, -3.102], "w2v-tsne": [3.147, -4.782], "glove-pca": [0.811, -2.502], "glove-tsne": [3.705, -5.544]}, "recs": {"w2v": [{"i": 16, "score": 0.793, "norm": 1.0}, {"i": 15, "score": 0.792, "norm": 0.993}, {"i": 18, "score": 0.739, "norm": 0.644}, {"i": 3, "score": 0.645, "norm": 0.02}, {"i": 1, "score": 0.642, "norm": 0.0}], "glove": [{"i": 16, "score": 0.809, "norm": 1.0}, {"i": 18, "score": 0.793, "norm": 0.908}, {"i": 15, "score": 0.729, "norm": 0.537}, {"i": 10, "score": 0.646, "norm": 0.046}, {"i": 12, "score": 0.638, "norm": 0.0}]}}, {"title": "The Age of Innocence", "short": "The Age of Innocence", "author": "Wharton", "genre": "Romance", "coords": {"w2v-pca": [1.573, -4.189], "w2v-tsne": [3.15, -5.1], "glove-pca": [1.572, -2.379], "glove-tsne": [3.452, -5.321]}, "recs": {"w2v": [{"i": 17, "score": 0.739, "norm": 1.0}, {"i": 15, "score": 0.702, "norm": 0.674}, {"i": 16, "score": 0.698, "norm": 0.638}, {"i": 3, "score": 0.625, "norm": 0.005}, {"i": 1, "score": 0.624, "norm": 0.0}], "glove": [{"i": 17, "score": 0.793, "norm": 1.0}, {"i": 16, "score": 0.739, "norm": 0.634}, {"i": 15, "score": 0.734, "norm": 0.604}, {"i": 1, "score": 0.645, "norm": 0.001}, {"i": 2, "score": 0.645, "norm": 0.0}]}}]};
+DATA.subtitle = "PREVIEW LAYOUT (synthetic) — run notebook Section 7 to embed real coordinates";
+
+const PALETTE = ["#5BC0FF","#FF6FA5","#9D7BFF","#FFD166","#5BE6B0","#FF9F5B","#7CF9B0","#F77AE0","#B6C2FF","#FFB3B3"];
+const genreColor = {};
+DATA.genres.forEach((g,i)=> genreColor[g] = PALETTE[i % PALETTE.length]);
+
+const books = DATA.books;
+const svg = document.getElementById('stage');
+const gNodes = document.getElementById('nodes');
+const gEdges = document.getElementById('edges');
+const NS = "http://www.w3.org/2000/svg";
+
+let state = { model:"w2v", proj:"pca", selected:null, hover:null, hidden:new Set() };
+let cur = books.map(()=>({x:0,y:0}));      // current on-screen positions (for tweening)
+let anim = null;
+
+function layoutKey(){ return state.model + "-" + state.proj; }
+
+// map raw coords -> screen with padding, preserving aspect
+function targets(){
+  const key = layoutKey();
+  const pts = books.map(b=> b.coords[key]);
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const w = svg.clientWidth, h = svg.clientHeight;
+  const padX = 90, padTop = 30, padBot = 60;
+  const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
+  const sx = (w-2*padX)/((maxx-minx)||1), sy=(h-padTop-padBot)/((maxy-miny)||1);
+  const s = Math.min(sx,sy);
+  const ox = padX + (w-2*padX - s*(maxx-minx))/2;
+  const oy = padTop + (h-padTop-padBot - s*(maxy-miny))/2;
+  return pts.map(p=>({ x: ox + s*(p[0]-minx), y: oy + s*(p[1]-miny) }));
+}
+
+// ---- build nodes once ----
+const nodeEls = books.map((b,i)=>{
+  const g = document.createElementNS(NS,"g"); g.setAttribute("class","node");
+  const c = document.createElementNS(NS,"circle");
+  c.setAttribute("r",7); c.setAttribute("fill",genreColor[b.genre]);
+  c.setAttribute("filter","url(#glow)"); c.setAttribute("stroke","rgba(255,255,255,.8)"); c.setAttribute("stroke-width","0.6");
+  const t = document.createElementNS(NS,"text");
+  t.setAttribute("x",10); t.setAttribute("y",3.5); t.textContent = b.short;
+  g.appendChild(c); g.appendChild(t);
+  g.addEventListener("mouseenter",()=>{ state.hover=i; paint(); });
+  g.addEventListener("mouseleave",()=>{ state.hover=null; paint(); });
+  g.addEventListener("click",(e)=>{ e.stopPropagation(); select(i); });
+  gNodes.appendChild(g);
+  return g;
+});
+svg.addEventListener("click",()=>{ select(null); });
+
+// ---- edges pool (reused) ----
+function clearEdges(){ while(gEdges.firstChild) gEdges.removeChild(gEdges.firstChild); }
+
+function activeNeighbors(){
+  const focus = state.selected!=null ? state.selected : state.hover;
+  if(focus==null) return {focus:null, recs:[]};
+  const recs = books[focus].recs[state.model].filter(r=> !state.hidden.has(books[r.i].genre));
+  return {focus, recs};
+}
+
+function paint(){
+  const {focus, recs} = activeNeighbors();
+  const litSet = new Set(recs.map(r=>r.i)); if(focus!=null) litSet.add(focus);
+
+  nodeEls.forEach((g,i)=>{
+    const b = books[i];
+    const hiddenG = state.hidden.has(b.genre);
+    const c = g.firstChild;
+    let r = 7, op = 1;
+    if(hiddenG){ op = 0.06; }
+    else if(focus!=null){
+      if(i===focus){ r = 11; }
+      else if(litSet.has(i)){ r = 8.5; }
+      else { op = 0.16; }
+    }
+    g.classList.toggle("faded", !hiddenG && focus!=null && !litSet.has(i));
+    g.classList.toggle("lit", litSet.has(i));
+    c.setAttribute("r", r);
+    g.style.opacity = op;
+    const tx = g.lastChild;
+    tx.style.opacity = (focus==null) ? (state.hidden.size? (hiddenG?0:0.55):0.0) : (litSet.has(i)?1:0);
+  });
+  // always show labels softly when nothing focused
+  if(focus==null){ nodeEls.forEach((g,i)=>{ g.lastChild.style.opacity = state.hidden.has(books[i].genre)?0:0.42; }); }
+
+  // edges
+  clearEdges();
+  if(focus!=null){
+    const f = cur[focus];
+    recs.forEach((r,k)=>{
+      const p = cur[r.i];
+      const path = document.createElementNS(NS,"path");
+      const mx=(f.x+p.x)/2, my=(f.y+p.y)/2 - 28;     // gentle arc
+      path.setAttribute("d",`M ${f.x} ${f.y} Q ${mx} ${my} ${p.x} ${p.y}`);
+      path.setAttribute("class","edge");
+      path.setAttribute("stroke-width", (0.6 + 2.8*r.norm).toFixed(2));
+      gEdges.appendChild(path);
+      requestAnimationFrame(()=> path.style.opacity = (0.25+0.6*r.norm).toFixed(2));
+    });
+  }
+}
+
+function place(){ nodeEls.forEach((g,i)=> g.setAttribute("transform",`translate(${cur[i].x},${cur[i].y})`)); }
+
+function tweenTo(tg){
+  if(anim) cancelAnimationFrame(anim);
+  const from = cur.map(p=>({x:p.x,y:p.y}));
+  const t0 = performance.now(), dur=650;
+  function step(now){
+    const e = Math.min(1,(now-t0)/dur), k = 1-Math.pow(1-e,3);   // easeOutCubic
+    cur = from.map((p,i)=>({ x:p.x+(tg[i].x-p.x)*k, y:p.y+(tg[i].y-p.y)*k }));
+    place(); paint();
+    if(e<1) anim=requestAnimationFrame(step);
+  }
+  anim=requestAnimationFrame(step);
+}
+
+function relayout(animate=true){
+  const tg = targets();
+  if(animate) tweenTo(tg); else { cur = tg; place(); paint(); }
+}
+
+// ---- selection / panel ----
+const panel = document.getElementById('panel');
+function select(i){
+  state.selected = i;
+  if(i==null){ panel.classList.remove('show'); paint(); return; }
+  const b = books[i];
+  document.getElementById('p-title').textContent = b.title;
+  document.getElementById('p-by').textContent = b.author ? "by "+b.author : "";
+  const gt = document.getElementById('p-genre');
+  gt.textContent = b.genre; gt.style.background = genreColor[b.genre]+"22"; gt.style.color = genreColor[b.genre];
+  const recs = b.recs[state.model];
+  const same = recs.slice(0,3).filter(r=> books[r.i].genre===b.genre).length;
+  document.getElementById('p-purity').innerHTML =
+    `genre purity (top-3): <b>${same}/3</b> share <b>${b.genre.split(' ')[0]}</b>`;
+  const box = document.getElementById('p-recs'); box.innerHTML="";
+  recs.forEach(r=>{
+    const o = books[r.i], isSame = o.genre===b.genre;
+    const el = document.createElement('div'); el.className="rec";
+    el.innerHTML = `<div class="t"><span>${o.title}</span><span class="s">${r.score.toFixed(3)}</span></div>
+      <div class="meta">${o.author||""} · <span class="${isSame?'same':''}">${o.genre}${isSame?' ✓':''}</span></div>
+      <div class="bar"><i style="width:${Math.max(6,r.norm*100).toFixed(0)}%;background:${genreColor[o.genre]}"></i></div>`;
+    el.addEventListener('click',()=> select(r.i));
+    box.appendChild(el);
+  });
+  panel.classList.add('show');
+  paint();
+}
+document.getElementById('closePanel').addEventListener('click',()=>select(null));
+
+// ---- legend ----
+const legend = document.getElementById('legend');
+DATA.genres.forEach(g=>{
+  const chip = document.createElement('div'); chip.className="chip";
+  chip.innerHTML = `<span class="dot" style="color:${genreColor[g]};background:${genreColor[g]}"></span>${g}`;
+  chip.addEventListener('click',()=>{
+    if(state.hidden.has(g)) state.hidden.delete(g); else state.hidden.add(g);
+    chip.classList.toggle('off'); paint();
+  });
+  legend.appendChild(chip);
+});
+
+// ---- controls ----
+function wireSeg(id, key){
+  document.querySelectorAll('#'+id+' button').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      document.querySelectorAll('#'+id+' button').forEach(b=>b.classList.remove('on'));
+      btn.classList.add('on'); state[key]=btn.dataset.v; relayout(true);
+      if(state.selected!=null) select(state.selected);
+    });
+  });
+}
+wireSeg('seg-model','model'); wireSeg('seg-proj','proj');
+
+const search = document.getElementById('search');
+search.addEventListener('input',()=>{
+  const q = search.value.trim().toLowerCase();
+  if(!q) return;
+  const hit = books.findIndex(b=> b.title.toLowerCase().includes(q));
+  if(hit>=0){ state.hover=hit; paint(); }
+});
+search.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){ const q=search.value.trim().toLowerCase();
+    const hit=books.findIndex(b=>b.title.toLowerCase().includes(q)); if(hit>=0) select(hit); }
+});
+
+document.getElementById('hint').textContent = DATA.subtitle || document.getElementById('hint').textContent;
+
+window.addEventListener('resize',()=> relayout(false));
+relayout(false);
+</script>
+</body>
+</html>
